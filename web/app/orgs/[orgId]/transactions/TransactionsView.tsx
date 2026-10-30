@@ -1,14 +1,15 @@
 "use client";
 
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "next/navigation";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { DataTable, type Column, type SortState } from "@/components/DataTable";
 import { FilterBar, type FilterPatch } from "@/components/FilterBar";
+import { useOrgEvents } from "@/components/OrgEvents";
 import { TableSkeleton } from "@/components/TableSkeleton";
 import { formatDateTime, formatMoney } from "@/lib/format";
+import { BffError, bffGet } from "@/lib/bff-client";
 import {
-  errorBodySchema,
   filtersToSearch,
   pageQuery,
   parseFilters,
@@ -20,32 +21,19 @@ import {
   type TransactionsPage,
 } from "@/lib/schemas";
 
-class BffError extends Error {
-  constructor(
-    readonly status: number,
-    readonly code: string,
-  ) {
-    super(code);
-  }
-}
-
-async function getTransactions(
+function getTransactions(
   orgId: string,
   filters: Filters,
   cursor: string | null,
   signal: AbortSignal,
 ): Promise<TransactionsPage> {
   const qs = pageQuery(filters, cursor).toString();
-  const res = await fetch(`/api/orgs/${encodeURIComponent(orgId)}/transactions?${qs}`, { signal });
-  const body: unknown = await res.json().catch(() => null);
-  if (!res.ok) {
-    throw new BffError(res.status, errorBodySchema.safeParse(body).data?.error ?? "unknown_error");
-  }
-  return transactionsPageSchema.parse(body);
+  return bffGet(`/api/orgs/${encodeURIComponent(orgId)}/transactions?${qs}`, transactionsPageSchema, signal);
 }
 
 const ERROR_MESSAGES: Record<string, string> = {
   org_not_found: "This organization does not exist.",
+  forbidden: "You don't have access to this organization.",
   upstream_unavailable: "The payments service is unreachable. Is the API running?",
   upstream_timeout: "The payments service took too long to respond.",
   invalid_cursor: "This page link is no longer valid.",
@@ -106,15 +94,22 @@ export function TransactionsView({ orgId, initialPage, initialFiltersKey }: Prop
   const stack = pager.key === filtersKey ? pager.stack : [];
   const cursor = stack.at(-1) ?? null;
 
-  const canUseServerPage = cursor === null && filtersKey === initialFiltersKey && initialPage !== null;
+  const queryClient = useQueryClient();
+
+  // Seed the cache once with the server-rendered first page. Unlike `initialData`, this
+  // can't bring back an old snapshot after the cache entry has been garbage-collected.
+  useState(() => {
+    if (initialPage) {
+      queryClient.setQueryData(["transactions", orgId, parseFilters(new URLSearchParams(initialFiltersKey)), null], initialPage);
+    }
+  });
 
   const query = useQuery({
     queryKey: ["transactions", orgId, filters, cursor],
     queryFn: ({ signal }) => getTransactions(orgId, filters, cursor, signal),
     placeholderData: keepPreviousData,
-    initialData: canUseServerPage ? initialPage : undefined,
-    // 4xx answers (bad cursor, unknown org) will not change on retry.
-    retry: (count, err) => !(err instanceof BffError && err.status < 500) && count < 1,
+    // Rows only change when the user asks (filters, paging, or the "new transactions" banner).
+    refetchOnReconnect: false,
   });
 
   // Reads the live URL so this stays stable (FilterBar's debounce depends on it).
@@ -136,6 +131,29 @@ export function TransactionsView({ orgId, initialPage, initialFiltersKey }: Prop
   );
 
   const setStack = (next: string[]) => setPager({ key: filtersKey, stack: next });
+
+  // "N new transactions": counted per set of filters, since changing filters loads fresh rows.
+  const { subscribe } = useOrgEvents();
+  const [fresh, setFresh] = useState({ key: filtersKey, count: 0 });
+  const newCount = fresh.key === filtersKey ? fresh.count : 0;
+
+  useEffect(
+    () =>
+      subscribe("transactions", (count) => {
+        // Mark cached pages stale without refetching, so the visible rows never move.
+        // The next page the user opens is fetched fresh.
+        void queryClient.invalidateQueries({ queryKey: ["transactions", orgId], refetchType: "none" });
+        setFresh((prev) => ({ key: filtersKey, count: (prev.key === filtersKey ? prev.count : 0) + count }));
+      }),
+    [subscribe, queryClient, orgId, filtersKey],
+  );
+
+  const showNewTransactions = () => {
+    setFresh({ key: filtersKey, count: 0 });
+    // Page 1 is already invalidated, so leaving page N refetches it; on page 1, refetch directly.
+    if (stack.length === 0) void query.refetch();
+    else setStack([]);
+  };
   const page = query.data;
   const loadingNewPage = query.isFetching && query.isPlaceholderData;
 
@@ -144,7 +162,7 @@ export function TransactionsView({ orgId, initialPage, initialFiltersKey }: Prop
       <FilterBar filters={filters} onChange={onFilterChange} />
 
       <p aria-live="polite" className="sr-only">
-        {loadingNewPage ? "Loading transactions…" : ""}
+        {loadingNewPage ? "Loading transactions…" : newCount > 0 ? `${newCount} new transactions available` : ""}
       </p>
 
       {query.isError ? (
@@ -173,6 +191,15 @@ export function TransactionsView({ orgId, initialPage, initialFiltersKey }: Prop
         <TableSkeleton />
       ) : (
         <>
+          {newCount > 0 && (
+            <button
+              type="button"
+              onClick={showNewTransactions}
+              className="self-center rounded-full bg-zinc-900 px-4 py-1.5 text-sm font-medium text-white shadow hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900 dark:hover:bg-zinc-300"
+            >
+              {newCount === 1 ? "1 new transaction" : `${newCount} new transactions`} · Show
+            </button>
+          )}
           <DataTable
             caption="Transactions"
             columns={COLUMNS}
@@ -180,7 +207,7 @@ export function TransactionsView({ orgId, initialPage, initialFiltersKey }: Prop
             sort={{ key: filters.sort, dir: filters.dir }}
             onSortChange={onSortChange}
             getRowId={getRowId}
-            busy={loadingNewPage}
+            busy={query.isFetching}
             renderEmpty={() => (
               <div className="flex flex-col items-center gap-1 text-zinc-500">
                 <p className="font-medium text-zinc-700 dark:text-zinc-300">No transactions found</p>

@@ -6,9 +6,6 @@ const nextConfig: NextConfig = {
     agentFeedback: true,
   },
   cacheComponents: true,
-  async redirects() {
-    return [{ source: "/", destination: "/orgs/org_1/transactions", permanent: false }];
-  },
   partialPrefetching: true,
   turbopack: {
     rules: {

@@ -141,3 +141,43 @@ export function pageQuery(f: Filters, cursor: string | null): URLSearchParams {
   if (cursor) p.set("cursor", cursor);
   return p;
 }
+
+// ---- Live events (SSE) -----------------------------------------------------
+
+export const balanceEventSchema = z.object({ currency: z.enum(CURRENCIES), available: minorUnits });
+export type BalanceEvent = z.infer<typeof balanceEventSchema>;
+
+export const transactionsEventSchema = z.object({ count: z.number().int().positive() });
+
+// ---- Auth ------------------------------------------------------------------
+
+export const ROLES = ["admin", "finance", "support"] as const;
+export type Role = (typeof ROLES)[number];
+
+export const PASSWORD_MIN_LENGTH = 12;
+
+export const loginBodySchema = z.object({
+  email: z.string().trim().toLowerCase().pipe(z.email().max(254)),
+  password: z.string().min(1).max(256),
+});
+
+export const registerBodySchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  email: z.string().trim().toLowerCase().pipe(z.email().max(254)),
+  password: z.string().min(PASSWORD_MIN_LENGTH).max(256),
+});
+
+const userSchema = z.object({ id: z.string(), email: z.string(), name: z.string() });
+
+export const loginResponseSchema = z.object({
+  token: z.string().min(1),
+  expiresAt: z.iso.datetime(),
+  user: userSchema,
+});
+
+export const meSchema = z.object({
+  user: userSchema,
+  memberships: z.array(z.object({ orgId: z.string(), orgName: z.string(), role: z.enum(ROLES) })),
+  session: z.object({ expiresAt: z.iso.datetime() }),
+});
+export type Me = z.infer<typeof meSchema>;

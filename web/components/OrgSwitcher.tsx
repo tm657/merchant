@@ -1,11 +1,13 @@
 import Link from "next/link";
-import { ORG_IDS } from "@/lib/schemas";
+import type { Me } from "@/lib/schemas";
 
-export function OrgSwitcher({ currentOrgId }: { currentOrgId: string }) {
+/** Lists only the orgs the user is a member of. */
+export function OrgSwitcher({ memberships, currentOrgId }: { memberships: Me["memberships"]; currentOrgId: string }) {
+  if (memberships.length <= 1) return null;
   return (
     <nav aria-label="Organization">
       <ul className="flex gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900">
-        {ORG_IDS.map((orgId) => {
+        {memberships.map(({ orgId, orgName }) => {
           const current = orgId === currentOrgId;
           return (
             <li key={orgId}>
@@ -18,7 +20,7 @@ export function OrgSwitcher({ currentOrgId }: { currentOrgId: string }) {
                     : "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100"
                 }`}
               >
-                {orgId}
+                {orgName}
               </Link>
             </li>
           );

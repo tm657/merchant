@@ -1,9 +1,14 @@
 import { connection } from "next/server";
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { Suspense } from "react";
+import { AccessDenied } from "@/components/AccessDenied";
+import { BalanceCards } from "@/components/BalanceCards";
+import { OrgEventsProvider } from "@/components/OrgEvents";
 import { TableSkeleton } from "@/components/TableSkeleton";
-import { fetchTransactions, UpstreamError } from "@/lib/api.server";
-import { filtersToSearch, orgIdSchema, pageQuery, parseFilters, type TransactionsPage } from "@/lib/schemas";
+import { fetchBalances, fetchTransactions, UpstreamError } from "@/lib/api.server";
+import { requireUser } from "@/lib/auth.server";
+import { can } from "@/lib/permissions";
+import { filtersToSearch, orgIdSchema, pageQuery, parseFilters } from "@/lib/schemas";
 import { TransactionsView } from "./TransactionsView";
 
 type Props = PageProps<"/orgs/[orgId]/transactions">;
@@ -26,23 +31,41 @@ async function Transactions({ params, searchParams }: Props) {
   const { orgId } = await params;
   if (!orgIdSchema.safeParse(orgId).success) notFound();
 
+  // The API checks the session and membership again on every call below; this check
+  // only decides what to render.
+  const me = await requireUser();
+  const membership = me.memberships.find((m) => m.orgId === orgId);
+  if (!membership) return <AccessDenied />;
+  const showBalances = can(membership.role, "balances:read");
+
   const filters = parseFilters(await searchParams);
 
-  // First page straight from the API (no BFF hop on the server).
-  let initialPage: TransactionsPage | null = null;
-  try {
-    initialPage = await fetchTransactions(orgId, pageQuery(filters, null));
-  } catch (err) {
-    if (err instanceof UpstreamError && err.code === "org_not_found") notFound();
-    // Anything else: the client retries through the BFF and shows the error state.
-    console.error("Initial transactions fetch failed:", err);
+  // First page and balances straight from the API (no BFF hop on the server), in parallel.
+  const [page, balances] = await Promise.allSettled([
+    fetchTransactions(orgId, pageQuery(filters, null)),
+    showBalances ? fetchBalances(orgId) : Promise.resolve(null),
+  ]);
+  for (const r of [page, balances]) {
+    if (r.status === "fulfilled") continue;
+    const err = r.reason;
+    if (err instanceof UpstreamError && err.status === 401) redirect("/login?expired=1");
+    if (err instanceof UpstreamError && err.status === 403) return <AccessDenied />;
+    // Anything else: the client retries through the BFF and shows its error state.
+    console.error("Initial fetch failed:", err);
   }
 
   return (
-    <TransactionsView
-      orgId={orgId}
-      initialPage={initialPage}
-      initialFiltersKey={filtersToSearch(filters).toString()}
-    />
+    <OrgEventsProvider orgId={orgId}>
+      <div className="flex flex-col gap-8">
+        {showBalances && (
+          <BalanceCards orgId={orgId} initialBalances={balances.status === "fulfilled" ? balances.value : null} />
+        )}
+        <TransactionsView
+          orgId={orgId}
+          initialPage={page.status === "fulfilled" ? page.value : null}
+          initialFiltersKey={filtersToSearch(filters).toString()}
+        />
+      </div>
+    </OrgEventsProvider>
   );
 }

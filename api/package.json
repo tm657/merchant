@@ -10,9 +10,11 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "seed": "tsx src/seed.ts",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "node --import tsx --test 'src/**/*.test.ts'"
   },
   "dependencies": {
+    "argon2": "^0.45.1",
     "better-sqlite3": "^13.0.3",
     "fastify": "^5.12.7",
     "zod": "^4.6.7"

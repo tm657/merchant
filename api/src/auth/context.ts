@@ -1,0 +1,63 @@
+import type Database from "better-sqlite3";
+import type { FastifyReply, FastifyRequest } from "fastify";
+import type { Role } from "../db.js";
+import { orgParams } from "../routes/common.js";
+import { createLimiters, type Limiters } from "./rateLimit.js";
+import { createSessionStore, type Clock, type SessionStore } from "./sessions.js";
+
+export type OrgAuth = { userId: string; orgId: string; role: Role; token: string };
+
+declare module "fastify" {
+  interface FastifyRequest {
+    /** Set by requireOrgMember on /orgs/:orgId/* routes. */
+    orgAuth: OrgAuth | null;
+  }
+}
+
+export type AuthContext = {
+  db: Database.Database;
+  sessions: SessionStore;
+  limiters: Limiters;
+  clock: Clock;
+  roleIn(userId: string, orgId: string): Role | null;
+};
+
+export function createAuthContext(db: Database.Database, clock: Clock = Date.now): AuthContext {
+  const membership = db.prepare<[string, string], { role: Role }>(
+    "SELECT role FROM memberships WHERE user_id = ? AND org_id = ?",
+  );
+  return {
+    db,
+    clock,
+    sessions: createSessionStore(db, clock),
+    limiters: createLimiters(clock),
+    roleIn: (userId, orgId) => membership.get(userId, orgId)?.role ?? null,
+  };
+}
+
+export function bearerToken(req: FastifyRequest): string | null {
+  const header = req.headers.authorization;
+  if (!header?.startsWith("Bearer ")) return null;
+  return header.slice("Bearer ".length).trim() || null;
+}
+
+/**
+ * onRequest hook for every /orgs/:orgId/* route.
+ * 401: no valid session. 403: valid session but no membership (also for unknown orgs,
+ * so the response doesn't reveal which orgs exist).
+ */
+export function requireOrgMember(auth: AuthContext) {
+  return async (req: FastifyRequest, reply: FastifyReply) => {
+    const token = bearerToken(req);
+    const session = auth.sessions.validate(token);
+    if (!session || !token) return reply.code(401).send({ error: "unauthenticated" });
+
+    const params = orgParams.safeParse(req.params);
+    if (!params.success) return reply.code(403).send({ error: "forbidden" });
+
+    const role = auth.roleIn(session.userId, params.data.orgId);
+    if (!role) return reply.code(403).send({ error: "forbidden" });
+
+    req.orgAuth = { userId: session.userId, orgId: params.data.orgId, role, token };
+  };
+}
