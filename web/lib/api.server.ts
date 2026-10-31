@@ -3,6 +3,10 @@ import { cookies, headers } from "next/headers";
 import { z } from "zod";
 import {
   auditPageSchema,
+  exportJobListSchema,
+  exportJobResponseSchema,
+  settlementsResponseSchema,
+  type ExportFilters,
   orgMembersSchema,
   webhookDeliveriesPageSchema,
   webhookDeliveryResponseSchema,
@@ -90,6 +94,7 @@ async function request(path: string, init: RequestInit & { timeout?: boolean } =
 
 const PASS_THROUGH_403 = new Set(["self_approval_forbidden", "self_rejection_forbidden", "not_creator"]);
 const PASS_THROUGH_404 = new Set([
+  "export_not_found",
   "org_not_found",
   "payout_not_found",
   "webhook_endpoint_not_found",
@@ -117,8 +122,11 @@ async function toUpstreamError(res: Response): Promise<UpstreamError> {
         ? new UpstreamError(404, code)
         : new UpstreamError(502, "upstream_route_not_found");
     case 409:
-      // version_conflict, invalid_transition, insufficient_funds, ...
+      // version_conflict, invalid_transition, insufficient_funds, export_not_ready, ...
       return new UpstreamError(409, code ?? "conflict");
+    case 410:
+      // export_expired
+      return new UpstreamError(410, code ?? "gone");
     case 422:
       return new UpstreamError(422, code ?? "unprocessable");
     case 429:
@@ -258,6 +266,32 @@ export const webhooksApi = {
   },
   redeliver: (orgId: string, id: string, deliveryId: string) =>
     sendJson("POST", `${endpointPath(orgId, id)}/deliveries/${encodeURIComponent(deliveryId)}/redeliver`, undefined, webhookDeliveryResponseSchema),
+};
+
+// ---- Reports: CSV exports and settlements --------------------------------------------
+
+export const reportsApi = {
+  listExports: (orgId: string) => getJson(`${orgPath(orgId)}/exports`, exportJobListSchema),
+  createExport: (orgId: string, filters: ExportFilters) =>
+    sendJson("POST", `${orgPath(orgId)}/exports`, filters, exportJobResponseSchema),
+  settlements: (orgId: string, from: string, to: string) =>
+    getJson(`${orgPath(orgId)}/settlements?${new URLSearchParams({ from, to })}`, settlementsResponseSchema),
+
+  /** Streams the CSV through with its download headers; the API authorises this request. */
+  async download(orgId: string, exportId: string): Promise<Response> {
+    const res = await request(`${orgPath(orgId)}/exports/${encodeURIComponent(exportId)}/download`, {
+      headers: await authHeader(),
+      // A large file may take longer than the usual API timeout to stream.
+      timeout: false,
+    });
+    if (!res.ok) throw await toUpstreamError(res);
+    const headers = new Headers({ "cache-control": "private, no-store", "x-content-type-options": "nosniff" });
+    for (const h of ["content-type", "content-disposition", "content-length"]) {
+      const v = res.headers.get(h);
+      if (v) headers.set(h, v);
+    }
+    return new Response(res.body, { status: 200, headers });
+  },
 };
 
 export async function decidePayout(orgId: string, payoutId: string, action: PayoutAction, body: unknown) {

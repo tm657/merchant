@@ -12,6 +12,7 @@ export const PERMISSIONS = [
   "audit:read",
   "audit:export",
   "webhooks:manage",
+  "reports:export",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -26,8 +27,9 @@ const GRANTS: Record<Role, readonly Permission[]> = {
     "audit:read",
     "audit:export",
     "webhooks:manage",
+    "reports:export",
   ],
-  finance: ["transactions:read", "balances:read", "payout:read", "payout:create"],
+  finance: ["transactions:read", "balances:read", "payout:read", "payout:create", "reports:export"],
   support: ["transactions:read", "payout:read"],
 };
 

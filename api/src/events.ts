@@ -1,4 +1,4 @@
-import { balanceEventSchema, payoutEventSchema, transactionsEventSchema } from "@mini-payments/shared";
+import { balanceEventSchema, exportEventSchema, payoutEventSchema, transactionsEventSchema } from "@mini-payments/shared";
 import type { FastifyBaseLogger } from "fastify";
 import type { Redis } from "ioredis";
 import { z } from "zod";
@@ -7,6 +7,7 @@ export const orgEventSchema = z.discriminatedUnion("type", [
   balanceEventSchema.extend({ type: z.literal("balance") }),
   transactionsEventSchema.extend({ type: z.literal("transactions") }),
   payoutEventSchema.extend({ type: z.literal("payout") }),
+  exportEventSchema.extend({ type: z.literal("export") }),
 ]);
 export type OrgEvent = z.infer<typeof orgEventSchema>;
 

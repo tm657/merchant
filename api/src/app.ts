@@ -11,7 +11,9 @@ import { genReqId, requestIdHeader } from "./requestId.js";
 import { authRoutes } from "./routes/auth.js";
 import { balancesRoutes } from "./routes/balances.js";
 import { eventsRoutes } from "./routes/events.js";
+import { createExportService } from "./exports/service.js";
 import { auditRoutes } from "./routes/audit.js";
+import { reportsRoutes } from "./routes/reports.js";
 import { payoutsRoutes } from "./routes/payouts.js";
 import { webhooksRoutes } from "./routes/webhooks.js";
 import { createWebhookService } from "./webhooks/service.js";
@@ -36,6 +38,8 @@ type Options = {
   webhookKey: Buffer;
   /** Which webhook URLs may be saved. */
   webhookPolicy: TargetPolicy;
+  /** Where the reports worker writes CSV exports (downloads read from here). */
+  exportDir: string;
 };
 
 /** Builds the app without listening, so tests can use app.inject(). */
@@ -53,6 +57,7 @@ export function buildApp({
   maxStreamsPerOrg = 20,
   webhookKey,
   webhookPolicy,
+  exportDir,
 }: Options) {
   const app = Fastify({
     logger,
@@ -73,6 +78,7 @@ export function buildApp({
   const payouts = createPayoutService(db, clock);
   const webhooks = createWebhookService(db, webhookKey, webhookPolicy, clock);
   const auditLog = createAuditLog(db, clock);
+  const exportService = createExportService(db, exportDir, clock);
 
   healthRoutes(app, {
     postgres: () => db.query("SELECT 1"),
@@ -94,6 +100,7 @@ export function buildApp({
     payoutsRoutes(orgScope, payouts, auth.limiters.payoutCreate);
     webhooksRoutes(orgScope, webhooks);
     auditRoutes(orgScope, auditLog, db);
+    reportsRoutes(orgScope, exportService, db);
   });
 
   return { app, bus, auth, payouts, webhooks };

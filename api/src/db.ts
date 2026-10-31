@@ -6,6 +6,7 @@ export type Queryable = Pick<pg.Pool | pg.PoolClient, "query">;
 
 const INT8_OID = 20;
 const TIMESTAMPTZ_OID = 1184;
+const DATE_OID = 1082;
 
 /** BIGINT as a JS number. Refuses values a number can't hold exactly, instead of rounding money. */
 export function parseBigint(value: string): number {
@@ -22,6 +23,8 @@ const types = {
     if (oid === INT8_OID) return parseBigint;
     // Always an ISO 8601 UTC string with milliseconds, e.g. 2026-01-01T09:00:00.000Z.
     if (oid === TIMESTAMPTZ_OID) return (value: string) => parseTimestamptz(value).toISOString();
+    // A calendar date stays the string Postgres sent (YYYY-MM-DD): no timezone to shift it.
+    if (oid === DATE_OID) return (value: string) => value;
     return pg.types.getTypeParser(oid, format);
   }) as typeof pg.types.getTypeParser,
 };

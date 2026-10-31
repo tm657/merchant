@@ -1,4 +1,4 @@
-import type { AuditAction, WebhookDeliveryStatus } from "@mini-payments/shared";
+import type { AuditAction, ExportStatus, WebhookDeliveryStatus } from "@mini-payments/shared";
 
 export const AUDIT_ACTION_LABEL: Record<AuditAction, string> = {
   "auth.login.succeeded": "Signed in",
@@ -17,7 +17,36 @@ export const AUDIT_ACTION_LABEL: Record<AuditAction, string> = {
   "webhook.endpoint.deleted": "Webhook endpoint deleted",
   "webhook.delivery.redelivered": "Webhook redelivered",
   "audit.exported": "Audit log exported",
+  "report.export.requested": "Transactions export requested",
+  "report.export.downloaded": "Transactions export downloaded",
 };
+
+export const EXPORT_STATUS_LABEL: Record<ExportStatus, string> = {
+  queued: "Queued",
+  running: "Running",
+  completed: "Ready",
+  failed: "Failed",
+  expired: "Expired",
+};
+
+export function exportErrorMessage({ status, code, retryAfter }: { status: number; code: string; retryAfter?: number }): string {
+  switch (code) {
+    case "too_many_exports":
+      return "This organization already has 20 exports waiting. Let some finish first.";
+    case "export_expired":
+      return "This export has expired (downloads last 24 hours). Export again.";
+    case "export_not_ready":
+      return "This export isn't finished yet.";
+    case "export_not_found":
+      return "This export doesn't exist.";
+    case "forbidden":
+      return "Your role can't export reports.";
+    case "network":
+      return "Couldn't reach the server. Try again.";
+  }
+  if (status === 429) return `Too many requests. Try again${retryAfter ? ` in ${retryAfter} s` : " shortly"}.`;
+  return `Something went wrong (${status || "no response"}). Try again.`;
+}
 
 export const DELIVERY_STATUS_LABEL: Record<WebhookDeliveryStatus, string> = {
   pending: "Pending",

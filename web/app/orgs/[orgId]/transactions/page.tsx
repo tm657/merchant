@@ -62,6 +62,7 @@ async function Transactions({ params, searchParams }: Props) {
         )}
         <TransactionsView
           orgId={orgId}
+          canExport={can(membership.role, "reports:export")}
           initialPage={page.status === "fulfilled" ? page.value : null}
           initialFiltersKey={filtersToSearch(filters).toString()}
         />

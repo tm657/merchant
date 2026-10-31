@@ -11,6 +11,7 @@ export function OrgNav({ orgId, role }: { orgId: string; role: Role }) {
   const links = [
     { href: `${base}/transactions`, label: "Transactions", show: true },
     { href: `${base}/payouts`, label: "Pay-outs", show: can(role, "payout:read") },
+    { href: `${base}/reports`, label: "Reports", show: can(role, "reports:export") },
     { href: `${base}/audit`, label: "Audit log", show: can(role, "audit:read") },
     { href: `${base}/settings/webhooks`, label: "Webhooks", show: can(role, "webhooks:manage") },
   ].filter((l) => l.show);

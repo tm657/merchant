@@ -4,3 +4,4 @@ export * from "./schemas.ts";
 export * from "./payouts.ts";
 export * from "./audit.ts";
 export * from "./webhooks.ts";
+export * from "./reports.ts";

@@ -20,7 +20,10 @@
     "webhooks": "tsx src/webhook-worker.ts",
     "dev:webhooks": "tsx watch src/webhook-worker.ts",
     "webhook-receiver": "tsx scripts/webhook-receiver.ts",
-    "check-ledger": "tsx scripts/check-ledger.ts"
+    "check-ledger": "tsx scripts/check-ledger.ts",
+    "reports": "tsx src/reports-worker.ts",
+    "dev:reports": "tsx watch src/reports-worker.ts",
+    "settle": "tsx scripts/settle.ts"
   },
   "dependencies": {
     "@mini-payments/shared": "*",

@@ -9,7 +9,8 @@ import { FilterBar, type FilterPatch } from "@/components/FilterBar";
 import { useOrgEvents } from "@/components/OrgEvents";
 import { TableSkeleton } from "@/components/TableSkeleton";
 import { formatDateTime, formatMoney, TRANSACTION_TYPE_LABEL } from "@/lib/format";
-import { BffError, bffGet } from "@/lib/bff-client";
+import { exportErrorMessage } from "@/lib/admin-messages";
+import { BffError, bffGet, bffPostJson } from "@/lib/bff-client";
 import {
   transactionsPageSchema,
   type SortKey,
@@ -17,6 +18,7 @@ import {
   type Transaction,
   type TransactionType,
   type TransactionsPage,
+  exportJobResponseSchema,
 } from "@mini-payments/shared";
 import { filtersToSearch, pageQuery, parseFilters, type Filters } from "@/lib/filters";
 
@@ -102,13 +104,15 @@ const getRowId = (t: Transaction) => t.id;
 
 type Props = {
   orgId: string;
+  /** Show "Export these filters" (reports:export). The API checks the role again. */
+  canExport: boolean;
   /** First page rendered on the server, or null if that fetch failed. */
   initialPage: TransactionsPage | null;
   /** The filters the server used for `initialPage`, serialized. */
   initialFiltersKey: string;
 };
 
-export function TransactionsView({ orgId, initialPage, initialFiltersKey }: Props) {
+export function TransactionsView({ orgId, canExport, initialPage, initialFiltersKey }: Props) {
   // The URL is the source of truth for filters and sort.
   const searchParams = useSearchParams();
   const filters = useMemo(() => parseFilters(searchParams), [searchParams]);
@@ -186,7 +190,10 @@ export function TransactionsView({ orgId, initialPage, initialFiltersKey }: Prop
 
   return (
     <div className="flex flex-col gap-4">
-      <FilterBar filters={filters} onChange={onFilterChange} />
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <FilterBar filters={filters} onChange={onFilterChange} />
+        {canExport && <ExportButton orgId={orgId} filters={filters} />}
+      </div>
 
       <p aria-live="polite" className="sr-only">
         {loadingNewPage ? "Loading transactions…" : newCount > 0 ? `${newCount} new transactions available` : ""}
@@ -269,6 +276,41 @@ export function TransactionsView({ orgId, initialPage, initialFiltersKey }: Prop
           </nav>
         </>
       )}
+    </div>
+  );
+}
+
+/** Queues a CSV export of exactly what the list shows (same filters and sort). */
+function ExportButton({ orgId, filters }: { orgId: string; filters: Filters }) {
+  const [state, setState] = useState<{ kind: "idle" } | { kind: "pending" } | { kind: "done" } | { kind: "error"; message: string }>({
+    kind: "idle",
+  });
+  const start = async () => {
+    setState({ kind: "pending" });
+    const res = await bffPostJson(`/api/orgs/${encodeURIComponent(orgId)}/exports`, filters, exportJobResponseSchema);
+    setState(res.ok ? { kind: "done" } : { kind: "error", message: exportErrorMessage(res) });
+  };
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <button
+        type="button"
+        onClick={() => void start()}
+        disabled={state.kind === "pending"}
+        className="h-9 rounded-md border border-zinc-300 px-3 text-sm font-medium hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
+      >
+        {state.kind === "pending" ? "Starting export…" : "Export these filters"}
+      </button>
+      <p role="status" className="text-xs">
+        {state.kind === "done" && (
+          <>
+            Export started.{" "}
+            <Link href={`/orgs/${encodeURIComponent(orgId)}/reports`} className="font-medium underline">
+              Follow it on Reports
+            </Link>
+          </>
+        )}
+        {state.kind === "error" && <span className="text-red-700 dark:text-red-300">{state.message}</span>}
+      </p>
     </div>
   );
 }

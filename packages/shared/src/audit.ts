@@ -18,6 +18,8 @@ export const AUDIT_ACTIONS = [
   "webhook.endpoint.deleted",
   "webhook.delivery.redelivered",
   "audit.exported",
+  "report.export.requested",
+  "report.export.downloaded",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 

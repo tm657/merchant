@@ -11,6 +11,7 @@ An npm workspaces monorepo. Run `npm install` once at the repo root: there is on
 - `api/`: Node 20.12+ TypeScript service using Fastify, pg (Postgres), ioredis (Redis), node-pg-migrate, zod, and tsx. Runs on port **4000**. Several instances can run side by side: everything they share lives in Postgres or Redis.
 - `docker-compose.yml`: Postgres 16 and Redis 7 for local development, bound to 127.0.0.1.
 - **Postgres** holds all app data, including sessions. **Redis** holds rate-limit counters and carries live events (pub/sub) between API instances.
+- **Reports worker** (`api/src/reports-worker.ts`, `npm run dev:reports`): runs CSV export jobs, deletes expired export files every 10 minutes, and computes settlements daily (and at startup). Export files go to `EXPORT_DIR` (`api/var/exports`, gitignored). The API serves downloads from the same folder, so both must share a filesystem.
 - **Webhook worker** (`api/src/webhook-worker.ts`, `npm run dev:webhooks`): a separate process that delivers webhooks. Deliveries are created by the outbox publisher in the pay-out worker, so both must run. `api/scripts/webhook-receiver.ts` (`npm run webhook-receiver`) is a local receiver that verifies signatures, for demos.
 - **Pay-out worker** (`api/src/worker.ts`, `npm run dev:worker`): a separate process that sends approved pay-outs to the simulated provider, publishes the outbox to Redis, and deletes old idempotency keys and outbox rows. Without it, pay-outs stay `approved` and no live pay-out or balance events reach the browser for pay-out changes. Any number of workers can run at once.
 - `web/` uses a newer Next.js with breaking changes. Read `web/AGENTS.md` and the docs in `web/node_modules/next/dist/docs/` before writing Next.js code.
@@ -64,7 +65,24 @@ An npm workspaces monorepo. Run `npm install` once at the repo root: there is on
   - `WEBHOOK_ALLOW_PRIVATE_TARGETS=true` allows only loopback and private ranges, for the local demo. Config refuses it in production. Link-local (cloud metadata) is never allowed.
 - **Webhook secrets** are encrypted with AES-256-GCM using `WEBHOOK_SECRET_KEY`, with the endpoint id as AAD. They're returned only by create and rotate (the UI shows them once), and are never logged, audited or cached. Rotation keeps the old secret co-signing for 24 h (a second `v1=`). Requests are signed `Webhook-Signature: t=<unix>,v1=<HMAC-SHA256(secret, t + "." + body)>`, and receivers should dedupe on `Webhook-Id`.
 - **Webhook deliveries** use the same pattern as pay-outs: claim with `FOR UPDATE SKIP LOCKED` under a lease, make the HTTP call outside any transaction, and use `attempts` as the fencing token. Backoff is exponential (5 s base), and a delivery is marked `dead` after `WEBHOOK_MAX_ATTEMPTS` (8). Redelivery is a new row with the same body and event id.
-- **CSV exports** neutralise formula prefixes (`= + - @`) and quote per RFC 4180. They are capped (`AUDIT_EXPORT_MAX_ROWS`), audited in the same transaction, and use POST (with the CSRF check), because exporting is an action.
+- **CSV cells** go through `api/src/csv.ts`. `csvText` handles every text cell: it quotes per RFC 4180 and prefixes `'` when the cell starts with `= + - @`, tab or carriage return. That applies even to text that looks like a number (a counterparty called "-12.34" is still text). Only amounts produced by `formatMinorUnits` use `csvAmount`, which checks the decimal shape and stays unprefixed so spreadsheets can sum it.
+- **Money in files** is a decimal string from `formatMinorUnits(amount, currency)` (string arithmetic on integer minor units, by the currency exponent: `-3333` USD → `-33.33`, IDR has no decimals). Never divide or use floats to format amounts.
+- **Transaction exports** are jobs (`export_jobs`):
+  - **Filters:** `POST /orgs/:orgId/exports` takes the transactions list's filters, and the worker reads rows with the same `queryTransactionsPage` (in `transactionsQuery.ts`). The list and the export can't drift apart.
+  - **Claims:** `FOR UPDATE SKIP LOCKED`, a lease, and `attempts` as the fencing token.
+  - **Per-org limit:** at most `MAX_RUNNING_EXPORTS_PER_ORG` (2) run per org, enforced by a Redis sorted set of leased slots (`exports/slots.ts`), not a bare counter, so a crashed worker can't leak a slot.
+  - **Snapshot:** one REPEATABLE READ snapshot per file.
+  - **Caps:** over the row cap or size cap, the job fails with a reason and the partial file is deleted. Never a truncated file.
+  - **Progress** ticks go straight to Redis pub/sub (throwaway). Final states go through the outbox.
+  - **Downloads** are authorised per request (session, membership, `reports:export`, org, expiry), audited, sent with `Content-Disposition: attachment`, and answer 410 after 24 hours.
+  - **Files** have random names and are never derived from input.
+- **Settlements** are derived data. Only `settle(from, to)` (`api/src/settlements.ts`) writes them:
+  - It's an idempotent upsert of successful transactions per org, currency and UTC day, for finished days only.
+  - It runs under `pg_try_advisory_xact_lock`: a second instance skips instead of waiting.
+  - The daily run recomputes the last 7 settled days, so late entries are included.
+  - Settlement totals must always equal the ledger for the same period; a reconciliation test checks this.
+  - Recompute by hand with `npm run db:settle -- [from] [to]`.
+- **Audit log CSV exports** neutralise formula prefixes (`= + - @`) and quote per RFC 4180. They are capped (`AUDIT_EXPORT_MAX_ROWS`), audited in the same transaction, and use POST (with the CSRF check), because exporting is an action.
 - **Local services bind to 127.0.0.1**, including ports in `docker-compose.yml`.
 - **Secrets and data stay out of git**: `.env*` files are gitignored, except `.env.example`, which must never contain real secrets. Seed passwords (`api/seed-users.local.json`) are gitignored too. Never commit them.
 
@@ -102,6 +120,7 @@ npm run db:seed                      # (re)creates the demo data, incl. 3 pendin
 npm run dev:api        # API on http://localhost:4000 (check http://localhost:4000/readyz)
 npm run dev:worker     # pay-out worker + outbox publisher (no port)
 npm run dev:webhooks   # webhook delivery worker (no port)
+npm run dev:reports    # CSV exports + daily settlements (no port)
 npm run dev:web        # web on http://localhost:3000
 
 # optional, for webhook demos: point an endpoint at http://127.0.0.1:4500/webhooks

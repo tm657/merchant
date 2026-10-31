@@ -61,3 +61,21 @@ export function parseMoneyInput(input: string, currency: Currency): MoneyInputRe
   if (amount <= 0) return { ok: false, error: "Enter an amount greater than zero" };
   return { ok: true, amount };
 }
+
+/**
+ * Integer minor units as a decimal string for `currency`, using string arithmetic only
+ * (no floats): -3333 USD is "-33.33", 5 USD is "0.05", 15000 IDR is "15000". For machine
+ * output such as CSV; screens use formatMoney in the web app.
+ */
+export function formatMinorUnits(amount: number, currency: Currency): string {
+  if (!Number.isSafeInteger(amount)) throw new RangeError(`amount must be a safe integer, got ${amount}`);
+  const exponent = CURRENCY_EXPONENT[currency];
+  const sign = amount < 0 ? "-" : "";
+  const digits = String(Math.abs(amount));
+  if (exponent === 0) return `${sign}${digits}`;
+  const padded = digits.padStart(exponent + 1, "0");
+  return `${sign}${padded.slice(0, -exponent)}.${padded.slice(-exponent)}`;
+}
+
+/** The only shape formatMinorUnits produces. */
+export const DECIMAL_AMOUNT_PATTERN = /^-?\d+(\.\d+)?$/;

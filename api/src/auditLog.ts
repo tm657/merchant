@@ -1,6 +1,7 @@
 import { AUDIT_EXPORT_MAX_ROWS, SYSTEM_ACTOR, type AuditAction, type AuditEntry, type AuditFilters } from "@mini-payments/shared";
 import { z } from "zod";
 import { audit, type AuditContext } from "./audit.js";
+import { csvText } from "./csv.js";
 import type { Clock } from "./auth/sessions.js";
 import { withTransaction, type Db, type Queryable } from "./db.js";
 
@@ -76,13 +77,6 @@ const SELECT = `SELECT a.id, a.org_id, a.actor_id, a.actor_label, a.action, a.ta
                        host(a.ip) AS ip, a.user_agent, a.request_id, a.created_at
                 FROM audit_log a`;
 
-/** RFC 4180 quoting, plus a leading ' on anything a spreadsheet would run as a formula. */
-function csvCell(value: unknown): string {
-  let s = value === null || value === undefined ? "" : typeof value === "string" ? value : JSON.stringify(value);
-  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
-  return /[",\r\n]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
-}
-
 const CSV_COLUMNS = [
   "id",
   "createdAt",
@@ -141,7 +135,7 @@ export function createAuditLog(db: Db, clock: Clock = Date.now) {
             { orgId, action: "audit.exported", metadata: { filters: f, rows: entries.length, truncated } },
             new Date(clock()).toISOString(),
           );
-          const lines = [CSV_COLUMNS.join(","), ...entries.map((e) => CSV_COLUMNS.map((c) => csvCell(e[c])).join(","))];
+          const lines = [CSV_COLUMNS.join(","), ...entries.map((e) => CSV_COLUMNS.map((c) => csvText(e[c])).join(","))];
           return { csv: `${lines.join("\r\n")}\r\n`, rows: entries.length, truncated };
         },
         { isolation: "REPEATABLE READ" },

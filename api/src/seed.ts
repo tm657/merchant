@@ -8,6 +8,7 @@ import { CURRENCIES, majorToMinor, type Currency, type Role, type Status } from 
 import { amountRange } from "./amounts.js";
 import { migrationConfigSchema, parseEnv } from "./config.js";
 import { createDb, withTransaction } from "./db.js";
+import { dailyWindow, settle } from "./settlements.js";
 
 // The seed resets tables, so it runs as the owner (MIGRATION_DATABASE_URL), not the app role.
 const { MIGRATION_DATABASE_URL: DATABASE_URL } = parseEnv(migrationConfigSchema.pick({ MIGRATION_DATABASE_URL: true }));
@@ -132,7 +133,7 @@ try {
   await withTransaction(db, async (tx) => {
     await tx.query(
       // audit_log is append-only and is never cleared, not even here.
-      "TRUNCATE webhook_deliveries, webhook_endpoints, outbox, idempotency_keys, payout_events, payouts, sessions, memberships, users, balances, transactions, orgs",
+      "TRUNCATE settlements, export_jobs, webhook_deliveries, webhook_endpoints, outbox, idempotency_keys, payout_events, payouts, sessions, memberships, users, balances, transactions, orgs",
     );
 
     for (const org of ORGS) await tx.query("INSERT INTO orgs (id, name) VALUES ($1, $2)", [org.id, org.name]);
@@ -189,6 +190,12 @@ try {
     }
   });
 
+  // Settle every finished day of the seeded history, so the Reports page has data at once.
+  const window = await dailyWindow(db);
+  if (window) {
+    const result = await settle(db, window);
+    if (result.status === "done") console.log(`Settled ${result.from} to ${result.to} (${result.rows} rows).`);
+  }
   console.table((await db.query("SELECT id, currency, amount, beneficiary_name, status FROM payouts ORDER BY created_at")).rows);
   const counts = await db.query(
     "SELECT org_id, status, COUNT(*) AS n FROM transactions GROUP BY org_id, status ORDER BY org_id, status",

@@ -16,7 +16,9 @@ function format(event: OrgEvent): string {
       ? { currency: event.currency, available: event.available, reserved: event.reserved }
       : event.type === "payout"
         ? { payoutId: event.payoutId, status: event.status, version: event.version }
-        : { count: event.count };
+        : event.type === "export"
+          ? { exportId: event.exportId, status: event.status, rowsWritten: event.rowsWritten, rowsTotal: event.rowsTotal }
+          : { count: event.count };
   return `event: ${event.type}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
@@ -45,6 +47,7 @@ export function eventsRoutes(
     if (!orgAuth) return reply.code(401).send({ error: "unauthenticated" });
     const canSeeBalances = can(orgAuth.role, "balances:read");
     const canSeePayouts = can(orgAuth.role, "payout:read");
+    const canSeeExports = can(orgAuth.role, "reports:export");
 
     const open = openPerOrg.get(orgId) ?? 0;
     if (open >= maxStreamsPerOrg) {
@@ -84,6 +87,7 @@ export function eventsRoutes(
       unsubscribe = await bus.subscribe(orgId, (event) => {
         if (event.type === "balance" && !canSeeBalances) return;
         if (event.type === "payout" && !canSeePayouts) return;
+        if (event.type === "export" && !canSeeExports) return;
         send(format(event));
       });
     } catch (err) {

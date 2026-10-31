@@ -1,6 +1,8 @@
 import type { Role } from "@mini-payments/shared";
 import type { Redis } from "ioredis";
 import { randomBytes, randomUUID } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach } from "node:test";
 import { z } from "zod";
 import { buildApp } from "../app.js";
@@ -65,6 +67,9 @@ const TEST_APP_URL = (() => {
   u.password = "payments_app_test";
   return u.toString();
 })();
+
+/** Export files go to a temp folder per test process. */
+export const TEST_EXPORT_DIR = join(tmpdir(), `mini-payments-exports-${process.pid}`);
 
 /** A key for webhook secrets, fresh per test process. */
 export const TEST_WEBHOOK_KEY = randomBytes(32);
@@ -200,6 +205,7 @@ export async function makeTestApp(clock = fakeClock(), opts: TestAppOptions = {}
     logger: opts.logger,
     webhookKey: TEST_WEBHOOK_KEY,
     webhookPolicy: opts.webhookPolicy ?? TEST_WEBHOOK_POLICY,
+    exportDir: TEST_EXPORT_DIR,
   });
   cleanups.push(() => app.close());
 

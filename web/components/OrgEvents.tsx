@@ -4,9 +4,11 @@ import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   balanceEventSchema,
+  exportEventSchema,
   payoutEventSchema,
   transactionsEventSchema,
   type BalanceEvent,
+  type ExportEvent,
   type PayoutEvent,
 } from "@mini-payments/shared";
 
@@ -16,6 +18,7 @@ type Handlers = {
   balance: (event: BalanceEvent) => void;
   transactions: (count: number) => void;
   payout: (event: PayoutEvent) => void;
+  export: (event: ExportEvent) => void;
 };
 type EventType = keyof Handlers;
 
@@ -52,6 +55,7 @@ export function OrgEventsProvider({ orgId, children }: { orgId: string; children
     balance: new Set<Handlers["balance"]>(),
     transactions: new Set<Handlers["transactions"]>(),
     payout: new Set<Handlers["payout"]>(),
+    export: new Set<Handlers["export"]>(),
   }));
 
   // Status is tagged with its org, so a new org starts as "connecting" without an effect.
@@ -77,6 +81,7 @@ export function OrgEventsProvider({ orgId, children }: { orgId: string; children
           // Pay-out changes may have been missed too: refetch whatever is on screen.
           void queryClient.invalidateQueries({ queryKey: ["payouts", orgId] });
           void queryClient.invalidateQueries({ queryKey: ["payout", orgId] });
+          void queryClient.invalidateQueries({ queryKey: ["exports", orgId] });
         }
         attempt = 0;
         recovering = false;
@@ -96,6 +101,11 @@ export function OrgEventsProvider({ orgId, children }: { orgId: string; children
       source.addEventListener("payout", (e) => {
         const parsed = payoutEventSchema.safeParse(parseJson(e.data));
         if (parsed.success) for (const fn of listeners.payout) fn(parsed.data);
+      });
+
+      source.addEventListener("export", (e) => {
+        const parsed = exportEventSchema.safeParse(parseJson(e.data));
+        if (parsed.success) for (const fn of listeners.export) fn(parsed.data);
       });
 
       // EventSource would retry on its own at a fixed rate; close it and back off instead.

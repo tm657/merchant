@@ -25,6 +25,7 @@ const { app, bus } = buildApp({
   trustProxy: config.TRUST_PROXY,
   maxStreamsPerOrg: config.MAX_STREAMS_PER_ORG,
   webhookKey: parseSecretKey(config.WEBHOOK_SECRET_KEY),
+  exportDir: config.EXPORT_DIR,
   webhookPolicy: { requireHttps: config.NODE_ENV === "production", allowPrivate: config.WEBHOOK_ALLOW_PRIVATE_TARGETS },
 });
 

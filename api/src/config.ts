@@ -26,6 +26,8 @@ export const configSchema = z.object({
   WEBHOOK_SECRET_KEY: z
     .string()
     .refine((v) => Buffer.from(v, "base64").length === 32, "must be 32 bytes, base64 encoded (openssl rand -base64 32)"),
+  // CSV export files. Gitignored. The API (downloads) and the reports worker must share it.
+  EXPORT_DIR: z.string().min(1).default(join(API_ROOT, "var", "exports")),
   // Lets webhooks reach loopback and private addresses, for a local receiver. Never in production.
   WEBHOOK_ALLOW_PRIVATE_TARGETS: z
     .enum(["true", "false"])
@@ -103,6 +105,22 @@ export function parseEnv<T extends z.ZodType>(schema: T, env: NodeJS.ProcessEnv 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return parseEnv(apiConfigSchema, env);
 }
+
+/** The reports worker (npm run reports): CSV exports, their cleanup, daily settlements. */
+export const reportsWorkerConfigSchema = configSchema
+  .pick({ NODE_ENV: true, LOG_LEVEL: true, DATABASE_URL: true, REDIS_URL: true, EXPORT_DIR: true })
+  .extend({
+    EXPORT_MAX_ROWS: z.coerce.number().int().min(1).default(100_000),
+    EXPORT_MAX_BYTES: z.coerce.number().int().min(1024).default(50 * 1024 * 1024),
+    EXPORT_POLL_MS: z.coerce.number().int().min(50).default(1000),
+    EXPORT_LEASE_MS: z.coerce.number().int().min(5000).default(60_000),
+    // When the daily settlement runs, UTC (HH:MM). It also runs once at startup.
+    SETTLEMENT_RUN_AT: z
+      .string()
+      .regex(/^([01]\d|2[0-3]):[0-5]\d$/, "HH:MM, 24-hour, UTC")
+      .default("00:15"),
+  });
+export type ReportsWorkerConfig = z.infer<typeof reportsWorkerConfigSchema>;
 
 /** The webhook delivery worker (npm run webhooks). */
 export const webhookWorkerConfigSchema = configSchema

@@ -7,3 +7,6 @@ node_modules/
 
 # Next.js build output (Turbopack also writes some at the workspace root)
 .next/
+
+# CSV exports written by the reports worker (EXPORT_DIR)
+api/var/

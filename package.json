@@ -21,6 +21,8 @@
     "dev:worker": "npm run dev:worker -w api",
     "dev:webhooks": "npm run dev:webhooks -w api",
     "webhook-receiver": "npm run webhook-receiver -w api",
-    "db:check-ledger": "npm run check-ledger -w api"
+    "db:check-ledger": "npm run check-ledger -w api",
+    "dev:reports": "npm run dev:reports -w api",
+    "db:settle": "npm run settle -w api --"
   }
 }
