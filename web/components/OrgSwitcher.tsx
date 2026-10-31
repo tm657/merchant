@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { Me } from "@/lib/schemas";
+import type { Me } from "@mini-payments/shared";
 
 /** Lists only the orgs the user is a member of. */
 export function OrgSwitcher({ memberships, currentOrgId }: { memberships: Me["memberships"]; currentOrgId: string }) {

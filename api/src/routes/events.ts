@@ -2,12 +2,11 @@ import type Database from "better-sqlite3";
 import type { FastifyInstance } from "fastify";
 import type { ServerResponse } from "node:http";
 import type { AuthContext } from "../auth/context.js";
-import { can } from "../auth/permissions.js";
+import { can, REQUEST_ID_HEADER } from "@mini-payments/shared";
 import type { EventBus, OrgEvent } from "../events.js";
 import { badRequest, orgExists, orgParams } from "./common.js";
 
 const HEARTBEAT_MS = 15_000;
-const MAX_STREAMS_PER_ORG = Number(process.env.MAX_STREAMS_PER_ORG ?? 20);
 // A client that stops reading gets dropped instead of growing memory without limit.
 const MAX_BUFFERED_BYTES = 64 * 1024;
 
@@ -19,7 +18,13 @@ function format(event: OrgEvent): string {
   return `event: ${event.type}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-export function eventsRoutes(app: FastifyInstance, db: Database.Database, bus: EventBus, auth: AuthContext) {
+export function eventsRoutes(
+  app: FastifyInstance,
+  db: Database.Database,
+  bus: EventBus,
+  auth: AuthContext,
+  { maxStreamsPerOrg }: { maxStreamsPerOrg: number },
+) {
   const openPerOrg = new Map<string, number>();
   const openStreams = new Set<ServerResponse>();
 
@@ -39,7 +44,7 @@ export function eventsRoutes(app: FastifyInstance, db: Database.Database, bus: E
     const canSeeBalances = can(orgAuth.role, "balances:read");
 
     const open = openPerOrg.get(orgId) ?? 0;
-    if (open >= MAX_STREAMS_PER_ORG) {
+    if (open >= maxStreamsPerOrg) {
       return reply.code(429).header("retry-after", "10").send({ error: "too_many_streams" });
     }
     openPerOrg.set(orgId, open + 1);
@@ -53,6 +58,8 @@ export function eventsRoutes(app: FastifyInstance, db: Database.Database, bus: E
       "cache-control": "no-cache, no-transform",
       connection: "keep-alive",
       "x-accel-buffering": "no",
+      // Hijacked, so headers set by hooks are not sent; add the request ID by hand.
+      [REQUEST_ID_HEADER]: req.id,
     });
     res.write(": connected\n\n");
 

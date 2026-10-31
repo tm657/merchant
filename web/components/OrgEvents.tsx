@@ -2,7 +2,11 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { balanceEventSchema, transactionsEventSchema, type BalanceEvent } from "@/lib/schemas";
+import {
+  balanceEventSchema,
+  transactionsEventSchema,
+  type BalanceEvent,
+} from "@mini-payments/shared";
 
 export type StreamStatus = "connecting" | "live" | "reconnecting";
 

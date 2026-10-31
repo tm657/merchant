@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { errorResponse, openEventStream } from "@/lib/api.server";
-import { orgIdSchema } from "@/lib/schemas";
+import { orgIdSchema } from "@mini-payments/shared";
 
 // No `export const dynamic = "force-dynamic"`: it fails the build with cacheComponents on.
 // This handler reads the request, so it already runs on every request.

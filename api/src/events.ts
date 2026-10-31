@@ -1,4 +1,4 @@
-import type { Currency } from "./db.js";
+import type { Currency } from "@mini-payments/shared";
 
 export type OrgEvent =
   | { type: "balance"; currency: Currency; available: number }

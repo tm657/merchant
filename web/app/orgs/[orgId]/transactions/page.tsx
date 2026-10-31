@@ -7,8 +7,8 @@ import { OrgEventsProvider } from "@/components/OrgEvents";
 import { TableSkeleton } from "@/components/TableSkeleton";
 import { fetchBalances, fetchTransactions, UpstreamError } from "@/lib/api.server";
 import { requireUser } from "@/lib/auth.server";
-import { can } from "@/lib/permissions";
-import { filtersToSearch, orgIdSchema, pageQuery, parseFilters } from "@/lib/schemas";
+import { can, orgIdSchema } from "@mini-payments/shared";
+import { filtersToSearch, pageQuery, parseFilters } from "@/lib/filters";
 import { TransactionsView } from "./TransactionsView";
 
 type Props = PageProps<"/orgs/[orgId]/transactions">;

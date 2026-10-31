@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import type { FastifyBaseLogger } from "fastify";
 import { randomUUID } from "node:crypto";
-import { CURRENCIES, type Currency, type Status } from "./db.js";
+import { CURRENCIES, type Currency, type Status } from "@mini-payments/shared";
 import type { EventBus } from "./events.js";
 
 const MIN_DELAY_MS = 3000;

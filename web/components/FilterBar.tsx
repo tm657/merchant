@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useId, useState } from "react";
-import { CURRENCIES, STATUSES, type Filters } from "@/lib/schemas";
+import { CURRENCIES, STATUSES } from "@mini-payments/shared";
+import type { Filters } from "@/lib/filters";
 
 export type FilterPatch = Partial<Omit<Filters, "sort" | "dir">>;
 

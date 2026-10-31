@@ -4,7 +4,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { hashPassword } from "./auth/password.js";
-import { CURRENCIES, DB_PATH, openDb, type Currency, type Role, type Status } from "./db.js";
+import { CURRENCIES, type Currency, type Role, type Status } from "@mini-payments/shared";
+import { configSchema, parseEnv } from "./config.js";
+import { openDb } from "./db.js";
+
+// The seed only needs the SQLite path, not Postgres or Redis.
+const { DB_PATH } = parseEnv(configSchema.pick({ DB_PATH: true }));
 
 const ORGS = [
   { id: "org_1", name: "Acme Retail" },
@@ -51,7 +56,7 @@ const MERCHANTS = [
   "Steam", "Microsoft", "100% Pure_Co",
 ];
 
-// Amount ranges in minor units (all three currencies use 2 decimal places in ISO 4217).
+// Amount ranges in minor units (see CURRENCY_EXPONENT in @mini-payments/shared).
 const AMOUNT_RANGE: Record<Currency, [min: number, max: number]> = {
   USD: [100, 500_000], // $1 – $5,000
   IDR: [1_000_000, 2_000_000_000], // Rp10,000 – Rp20,000,000
@@ -89,7 +94,7 @@ function pickAmount(currency: Currency): number {
   return amount;
 }
 
-const db = openDb();
+const db = openDb(DB_PATH);
 const now = Date.now();
 // Second precision, so ~3% of rows share a timestamp with the row before (ties on created_at).
 let lastTs = now;

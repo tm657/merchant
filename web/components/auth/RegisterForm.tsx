@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useId, useState, type FormEvent } from "react";
 import { bffPost } from "@/lib/bff-client";
-import { PASSWORD_MIN_LENGTH } from "@/lib/schemas";
+import { PASSWORD_MIN_LENGTH } from "@mini-payments/shared";
 import { buttonClass, inputClass, labelClass, retryText } from "./AuthShell";
 
 export function RegisterForm() {

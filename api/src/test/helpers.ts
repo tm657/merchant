@@ -1,6 +1,7 @@
 import { buildApp } from "../app.js";
 import { hashPassword } from "../auth/password.js";
-import { openDb, type Role } from "../db.js";
+import type { Role } from "@mini-payments/shared";
+import { openDb } from "../db.js";
 
 export const PASSWORD = "correct horse battery staple";
 

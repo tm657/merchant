@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { Role } from "../db.js";
+import type { Role } from "@mini-payments/shared";
 import { orgParams } from "../routes/common.js";
 import { createLimiters, type Limiters } from "./rateLimit.js";
 import { createSessionStore, type Clock, type SessionStore } from "./sessions.js";

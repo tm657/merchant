@@ -1,27 +1,8 @@
 import type Database from "better-sqlite3";
 import type { FastifyInstance } from "fastify";
-import { z } from "zod";
-import { decodeCursor, DIRS, encodeCursor, SORTS, type Sort } from "../cursor.js";
-import { CURRENCIES, STATUSES, type Currency, type Status } from "../db.js";
+import { apiTransactionsQuerySchema as querySchema, type Currency, type Status } from "@mini-payments/shared";
+import { decodeCursor, encodeCursor, type Sort } from "../cursor.js";
 import { badRequest, orgExists, orgParams } from "./common.js";
-
-const querySchema = z
-  .object({
-    status: z.enum(STATUSES).optional(),
-    currency: z.enum(CURRENCIES).optional(),
-    from: z.iso.date().optional(), // YYYY-MM-DD, inclusive (UTC)
-    to: z.iso.date().optional(), // YYYY-MM-DD, inclusive (UTC)
-    q: z.string().trim().min(1).max(100).optional(),
-    sort: z.enum(SORTS).default("createdAt"),
-    dir: z.enum(DIRS).default("desc"),
-    cursor: z.string().min(1).max(500).optional(),
-    limit: z.coerce.number().int().min(1).max(100).default(25),
-  })
-  .strict()
-  .refine((v) => !v.from || !v.to || v.from <= v.to, {
-    message: "from must be on or before to",
-    path: ["from"],
-  });
 
 // Whitelist: the only strings ever interpolated into SQL.
 const SORT_COLUMN: Record<Sort, "created_at" | "amount"> = {

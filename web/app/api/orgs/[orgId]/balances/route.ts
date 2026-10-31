@@ -1,6 +1,6 @@
 import type { NextRequest } from "next/server";
 import { errorResponse, fetchBalances } from "@/lib/api.server";
-import { orgIdSchema } from "@/lib/schemas";
+import { orgIdSchema } from "@mini-payments/shared";
 
 export async function GET(_req: NextRequest, ctx: RouteContext<"/api/orgs/[orgId]/balances">) {
   const orgId = orgIdSchema.safeParse((await ctx.params).orgId);

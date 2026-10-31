@@ -1,6 +1,7 @@
-import type { Role } from "../db.js";
+/** Org roles, from most to least access. */
+export const ROLES = ["admin", "finance", "support"] as const;
+export type Role = (typeof ROLES)[number];
 
-// Mirrored in web/lib/permissions.ts for hiding UI. This copy is the one that's enforced.
 export const PERMISSIONS = ["transactions:read", "balances:read"] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -10,6 +11,10 @@ const GRANTS: Record<Role, readonly Permission[]> = {
   support: ["transactions:read"],
 };
 
+/**
+ * One map for both apps. The API enforces it on every request. The web app uses it
+ * only to hide or disable UI, which is never a security boundary.
+ */
 export function can(role: Role, permission: Permission): boolean {
   return GRANTS[role].includes(permission);
 }

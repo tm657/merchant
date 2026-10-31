@@ -3,7 +3,7 @@ import type { NextRequest } from "next/server";
 import { apiLogin, errorResponse } from "@/lib/api.server";
 import { sessionCookie } from "@/lib/auth.server";
 import { rejectCrossOrigin } from "@/lib/csrf.server";
-import { loginBodySchema } from "@/lib/schemas";
+import { loginBodySchema } from "@mini-payments/shared";
 
 export async function POST(req: NextRequest) {
   const csrf = rejectCrossOrigin(req);

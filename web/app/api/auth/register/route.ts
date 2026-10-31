@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { apiRegister, errorResponse } from "@/lib/api.server";
 import { rejectCrossOrigin } from "@/lib/csrf.server";
-import { registerBodySchema } from "@/lib/schemas";
+import { registerBodySchema } from "@mini-payments/shared";
 
 export async function POST(req: NextRequest) {
   const csrf = rejectCrossOrigin(req);

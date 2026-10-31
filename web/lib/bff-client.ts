@@ -1,5 +1,5 @@
 import type { z } from "zod";
-import { errorBodySchema } from "./schemas";
+import { errorBodySchema } from "@mini-payments/shared";
 
 /** An error response from our own BFF, as seen by browser code. */
 export class BffError extends Error {

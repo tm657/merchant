@@ -8,6 +8,10 @@
 
 node_modules/
 .env*
+!.env.example
 
 # Local seed passwords
 *.local.json
+
+# Next.js build output (Turbopack also writes some at the workspace root)
+.next/

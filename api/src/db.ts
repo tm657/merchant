@@ -1,19 +1,7 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname } from "node:path";
 
-export const CURRENCIES = ["USD", "IDR", "PHP"] as const;
-export type Currency = (typeof CURRENCIES)[number];
-
-export const STATUSES = ["pending", "success", "failed"] as const;
-export type Status = (typeof STATUSES)[number];
-
-export const ROLES = ["admin", "finance", "support"] as const;
-export type Role = (typeof ROLES)[number];
-
-const DATA_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "data");
-export const DB_PATH = process.env.DB_PATH ?? join(DATA_DIR, "payments.db");
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS orgs (
@@ -70,7 +58,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id);
 `;
 
-export function openDb(path: string = DB_PATH): Database.Database {
+export function openDb(path: string): Database.Database {
   mkdirSync(dirname(path), { recursive: true });
   const db = new Database(path);
   db.pragma("journal_mode = WAL");

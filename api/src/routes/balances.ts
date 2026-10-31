@@ -1,7 +1,6 @@
 import type Database from "better-sqlite3";
 import type { FastifyInstance } from "fastify";
-import { can } from "../auth/permissions.js";
-import type { Currency } from "../db.js";
+import { can, type Currency } from "@mini-payments/shared";
 import { badRequest, orgExists, orgParams } from "./common.js";
 
 export function balancesRoutes(app: FastifyInstance, db: Database.Database) {

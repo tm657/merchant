@@ -1,30 +1,9 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { randomUUID } from "node:crypto";
-import { z } from "zod";
 import { bearerToken, type AuthContext } from "../auth/context.js";
-import {
-  hashPassword,
-  PASSWORD_MAX_LENGTH,
-  PASSWORD_MIN_LENGTH,
-  verifyAgainstDummy,
-  verifyPassword,
-} from "../auth/password.js";
-import type { Role } from "../db.js";
+import { loginBodySchema as loginBody, registerBodySchema as registerBody, type Role } from "@mini-payments/shared";
+import { hashPassword, verifyAgainstDummy, verifyPassword } from "../auth/password.js";
 import { badRequest } from "./common.js";
-
-const email = z.string().trim().toLowerCase().pipe(z.email().max(254));
-
-const registerBody = z.object({
-  email,
-  name: z.string().trim().min(1).max(100),
-  password: z.string().min(PASSWORD_MIN_LENGTH).max(PASSWORD_MAX_LENGTH),
-});
-
-const loginBody = z.object({
-  email,
-  // No minimum here: a login must not reveal the password policy's edge cases.
-  password: z.string().min(1).max(PASSWORD_MAX_LENGTH),
-});
 
 type UserRow = { id: string; email: string; name: string; password_hash: string };
 

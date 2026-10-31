@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { useOrgEvents, type StreamStatus } from "@/components/OrgEvents";
 import { formatMoney } from "@/lib/format";
 import { bffGet } from "@/lib/bff-client";
-import { balancesSchema, type Balances } from "@/lib/schemas";
+import { balancesSchema, type Balances } from "@mini-payments/shared";
 
 const POLL_MS = 20_000;
 

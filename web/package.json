@@ -6,9 +6,11 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@mini-payments/shared": "*",
     "@tanstack/react-query": "^5.105.0",
     "next": "16.4.3",
     "react": "19.3.0",

@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import type { z } from "zod";
 import { errorResponse, fetchTransactions } from "@/lib/api.server";
-import { orgIdSchema, transactionsQuerySchema } from "@/lib/schemas";
+import { orgIdSchema, transactionsQuerySchema } from "@mini-payments/shared";
 
 function invalid(error: z.ZodError) {
   return Response.json(

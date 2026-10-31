@@ -1,9 +1,7 @@
+import { DIRS, type SortKey } from "@mini-payments/shared";
 import { z } from "zod";
 
-export const SORTS = ["createdAt", "amount"] as const;
-export type Sort = (typeof SORTS)[number];
-export const DIRS = ["asc", "desc"] as const;
-export type Dir = (typeof DIRS)[number];
+export type Sort = SortKey;
 
 // The cursor holds the last row's sort value and id, plus the sort and direction it was
 // made for. That way a cursor reused with a different sort is rejected rather than

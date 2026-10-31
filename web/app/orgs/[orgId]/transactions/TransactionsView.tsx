@@ -10,16 +10,13 @@ import { TableSkeleton } from "@/components/TableSkeleton";
 import { formatDateTime, formatMoney } from "@/lib/format";
 import { BffError, bffGet } from "@/lib/bff-client";
 import {
-  filtersToSearch,
-  pageQuery,
-  parseFilters,
   transactionsPageSchema,
-  type Filters,
   type SortKey,
   type Status,
   type Transaction,
   type TransactionsPage,
-} from "@/lib/schemas";
+} from "@mini-payments/shared";
+import { filtersToSearch, pageQuery, parseFilters, type Filters } from "@/lib/filters";
 
 function getTransactions(
   orgId: string,

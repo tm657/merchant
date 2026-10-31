@@ -1,8 +1,8 @@
 import type Database from "better-sqlite3";
 import type { FastifyReply } from "fastify";
-import { z } from "zod";
+import type { z } from "zod";
 
-export const orgParams = z.object({ orgId: z.string().min(1).max(64) });
+export { orgParamsSchema as orgParams } from "@mini-payments/shared";
 
 export function orgExists(db: Database.Database, orgId: string): boolean {
   return db.prepare("SELECT 1 FROM orgs WHERE id = ?").get(orgId) !== undefined;

@@ -1,5 +1,6 @@
 import "server-only";
 import type { NextRequest } from "next/server";
+import { getConfig } from "./config.server";
 
 /**
  * CSRF check for state-changing BFF routes: the request must come from this app's own
@@ -7,7 +8,7 @@ import type { NextRequest } from "next/server";
  * Set APP_ORIGIN when running behind a proxy that changes the Host header.
  */
 export function rejectCrossOrigin(req: NextRequest): Response | null {
-  const expected = process.env.APP_ORIGIN ?? req.nextUrl.origin;
+  const expected = getConfig().APP_ORIGIN ?? req.nextUrl.origin;
   const origin = req.headers.get("origin");
   const fetchSite = req.headers.get("sec-fetch-site");
   if (origin !== expected || (fetchSite !== null && fetchSite !== "same-origin")) {

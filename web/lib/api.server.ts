@@ -6,11 +6,14 @@ import {
   errorBodySchema,
   loginResponseSchema,
   meSchema,
+  REQUEST_ID_HEADER,
   transactionsPageSchema,
   type Balances,
   type Me,
   type TransactionsPage,
-} from "./schemas";
+} from "@mini-payments/shared";
+import { getConfig } from "./config.server";
+import { getRequestId, log } from "./log.server";
 import { SESSION_COOKIE } from "./session-cookie";
 
 const TIMEOUT_MS = 5000;
@@ -27,12 +30,6 @@ export class UpstreamError extends Error {
   }
 }
 
-function apiUrl(): string {
-  const url = process.env.API_URL;
-  if (!url) throw new UpstreamError(500, "api_url_not_configured");
-  return url.replace(/\/+$/, "");
-}
-
 export async function getSessionToken(): Promise<string | null> {
   return (await cookies()).get(SESSION_COOKIE)?.value ?? null;
 }
@@ -45,17 +42,24 @@ async function authHeader(): Promise<{ authorization: string }> {
 }
 
 async function request(path: string, init: RequestInit & { timeout?: boolean } = {}): Promise<Response> {
+  // Forward this request's ID so the API logs under the same one.
+  const requestId = await getRequestId();
+  const headers = new Headers(init.headers);
+  if (requestId) headers.set(REQUEST_ID_HEADER, requestId);
   try {
-    return await fetch(`${apiUrl()}${path}`, {
+    return await fetch(`${getConfig().API_URL}${path}`, {
       ...init,
+      headers,
       cache: "no-store",
       signal: init.signal ?? (init.timeout === false ? undefined : AbortSignal.timeout(TIMEOUT_MS)),
     });
   } catch (err) {
     if (err instanceof UpstreamError) throw err;
     if (err instanceof DOMException && err.name === "TimeoutError") {
+      await log.warn("api request timed out", { path });
       throw new UpstreamError(504, "upstream_timeout");
     }
+    await log.error("api request failed", { path, err });
     throw new UpstreamError(502, "upstream_unavailable");
   }
 }
@@ -87,7 +91,10 @@ async function getJson<T>(path: string, schema: z.ZodType<T>): Promise<T> {
   const res = await request(path, { headers: { accept: "application/json", ...(await authHeader()) } });
   if (!res.ok) throw await toUpstreamError(res);
   const parsed = schema.safeParse(await res.json().catch(() => null));
-  if (!parsed.success) throw new UpstreamError(502, "bad_upstream_response");
+  if (!parsed.success) {
+    await log.error("api response failed validation", { path, issues: parsed.error.issues.slice(0, 5) });
+    throw new UpstreamError(502, "bad_upstream_response");
+  }
   return parsed.data;
 }
 
@@ -172,13 +179,14 @@ export async function apiLogout(): Promise<void> {
 }
 
 /** Turns any error into a clean JSON response for a route handler. */
-export function errorResponse(err: unknown): Response {
+export async function errorResponse(err: unknown): Promise<Response> {
   if (err instanceof UpstreamError) {
+    if (err.status >= 500) await log.warn("upstream error", { status: err.status, code: err.code });
     return Response.json(
       { error: err.code },
       { status: err.status, headers: err.retryAfter ? { "retry-after": err.retryAfter } : {} },
     );
   }
-  console.error(err);
+  await log.error("unhandled error in route handler", { err });
   return Response.json({ error: "internal_error" }, { status: 500 });
 }
