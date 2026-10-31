@@ -3,7 +3,9 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "next/navigation";
 import { useId, useState } from "react";
+import { useSingleFlight } from "@/lib/useSingleFlight";
 import { DataTable, type Column } from "@/components/DataTable";
+import { useCursorStack } from "@/lib/useCursorStack";
 import { useAnnounce } from "@/components/LiveRegion";
 import { TableSkeleton } from "@/components/TableSkeleton";
 import { adminErrorMessage, DELIVERY_STATUS_LABEL, DELIVERY_STATUS_STYLE } from "@/lib/admin-messages";
@@ -26,10 +28,8 @@ export function DeliveriesView({ orgId, endpointId, enabled }: Props) {
   // The status filter lives in the URL.
   const status = z.enum(WEBHOOK_DELIVERY_STATUSES).optional().catch(undefined).parse(searchParams.get("status") ?? undefined);
   const statusKey = status ?? "all";
-  const [pager, setPager] = useState<{ key: string; stack: string[] }>({ key: statusKey, stack: [] });
-  const stack = pager.key === statusKey ? pager.stack : [];
-  const cursor = stack.at(-1) ?? null;
-  const setStack = (next: string[]) => setPager({ key: statusKey, stack: next });
+  // Prev/Next cursors for these filters; a filter change (back/forward too) starts at page 1.
+  const { stack, cursor, setStack } = useCursorStack(statusKey);
   const queryClient = useQueryClient();
   const announce = useAnnounce();
   const selectId = useId();
@@ -50,6 +50,7 @@ export function DeliveriesView({ orgId, endpointId, enabled }: Props) {
   });
 
   const [error, setError] = useState<string | null>(null);
+  const redeliverOnce = useSingleFlight();
   const redeliver = useMutation({
     mutationFn: (d: WebhookDelivery) => bffSend("POST", `${base}/deliveries/${d.id}/redeliver`, undefined, webhookDeliveryResponseSchema),
     onSuccess: (res) => {
@@ -121,7 +122,7 @@ export function DeliveriesView({ orgId, endpointId, enabled }: Props) {
         d.status === "succeeded" || d.status === "dead" ? (
           <button
             type="button"
-            onClick={() => redeliver.mutate(d)}
+            onClick={() => void redeliverOnce(() => redeliver.mutateAsync(d))}
             disabled={!enabled || redeliver.isPending}
             title={enabled ? undefined : "Enable the endpoint to redeliver"}
             className="rounded-md border border-zinc-300 px-2 py-1 text-xs font-medium hover:bg-zinc-100 disabled:opacity-40 dark:border-zinc-700 dark:hover:bg-zinc-800"

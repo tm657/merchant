@@ -14,7 +14,7 @@
     "migrate:create": "node-pg-migrate create --migrations-dir migrations --migration-file-language sql",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test 'src/**/*.test.ts'",
+    "test": "vitest run",
     "worker": "tsx src/worker.ts",
     "dev:worker": "tsx watch src/worker.ts",
     "webhooks": "tsx src/webhook-worker.ts",
@@ -23,7 +23,9 @@
     "check-ledger": "tsx scripts/check-ledger.ts",
     "reports": "tsx src/reports-worker.ts",
     "dev:reports": "tsx watch src/reports-worker.ts",
-    "settle": "tsx scripts/settle.ts"
+    "settle": "tsx scripts/settle.ts",
+    "test:watch": "vitest",
+    "e2e:prepare": "tsx scripts/e2e-prepare.ts"
   },
   "dependencies": {
     "@mini-payments/shared": "*",
@@ -41,6 +43,8 @@
     "eslint": "^10.14.0",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3",
-    "typescript-eslint": "^8.72.1"
+    "typescript-eslint": "^8.72.1",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
   }
 }

@@ -2,6 +2,7 @@
 
 import { useMutation } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
+import { useSingleFlight } from "@/lib/useSingleFlight";
 import { Dialog } from "@/components/Dialog";
 import { bffPostJson, type BffResult } from "@/lib/bff-client";
 import { formatMoney } from "@/lib/format";
@@ -108,6 +109,11 @@ function CreatePayoutForm({
     },
   });
   const failure = mutation.data && !mutation.data.ok ? mutation.data : null;
+
+  // isPending (and so the disabled button) only takes effect after a re-render; two clicks
+  // in the same tick would both get through. This blocks the second one at once.
+  const singleFlight = useSingleFlight();
+  const submit = (body: CreatePayoutBody) => void singleFlight(() => mutation.mutateAsync(body));
   // 422: this key belongs to other details now. Only a new key (a new form) can continue.
   const mustStartOver = failure?.status === 422;
 
@@ -165,7 +171,7 @@ function CreatePayoutForm({
               <button
                 type="button"
                 data-autofocus
-                onClick={() => mutation.mutate(review)}
+                onClick={() => submit(review)}
                 disabled={mutation.isPending}
                 aria-describedby={failure ? ids.error : undefined}
                 className="rounded-md bg-zinc-900 px-4 py-2 text-sm font-medium text-white hover:bg-zinc-700 disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-900"

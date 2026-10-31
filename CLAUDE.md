@@ -93,6 +93,8 @@ Run lint and type-check in each package you touched, and fix every error before 
 ```bash
 # everything, from the repo root
 npm run lint && npm run typecheck
+npm test                 # API + web unit and integration tests (Vitest)
+npm run test:e2e         # Playwright: builds web, prepares payments_e2e, starts the whole stack
 
 # or one package
 npm run lint -w web && npm run typecheck -w web   # typecheck runs `next typegen` first, so new routes are typed
@@ -101,6 +103,18 @@ npm run lint -w @mini-payments/shared && npm run typecheck -w @mini-payments/sha
 ```
 
 A change to `packages/shared` affects both apps, so type-check all three.
+
+## Tests
+
+- **One runner: Vitest** for the API (`api/src/**/*.test.ts`) and the web app (`web/test/**`). Playwright for end-to-end tests (`e2e/tests`). CI (`.github/workflows/ci.yml`) runs lint, type-check, API tests, web tests and e2e on every push and PR.
+- **API tests run against real Postgres and Redis, never mocks.** Vitest's global setup (`api/src/test/global-setup.ts`) drops and recreates `payments_test` and runs every migration up, down to zero and up again, so a migration without a working down fails CI. Each test then gets its own migrated schema and Redis prefix (`makeTestApp` / `makeTestDb`), so files run in parallel safely.
+- **Web tests use React Testing Library, user-event and MSW.** Every `/api/...` call needs an MSW handler: unhandled requests fail the test. `web/test/setup.ts` provides the jsdom gaps (`<dialog>`, `EventSource` as `FakeEventSource`), a `next/navigation` mock whose search params follow `history.pushState`, and a `jest` timer shim so RTL works with Vitest fake timers. Query elements by role and label (what users and screen readers see), not by class or test id, unless there's no accessible handle.
+- **Async UI that starts an action guards it with `useSingleFlight`** (`web/lib/useSingleFlight.ts`). A disabled button only takes effect after a re-render, so two clicks in the same tick would both get through. Tests cover a same-tick double click.
+- **Paged lists use `useCursorStack(filtersKey)`.** A filter change, back and forward included, always starts at page 1, so a URL always shows the same page.
+- **Live views resync on every event-stream open, the first included.** Anything that happened between the server render and the connection was sent to nobody.
+- **e2e runs a separate stack:** its own database (`payments_e2e`), Redis db 14, ports 4300/3300/4600, and export folder (`e2e/stack.json`). It uses the production web build, no simulator, and a provider that always pays. It never touches dev data or dev servers. Seed passwords are in `e2e/.cache/seed-users.local.json`. Traces, screenshots and videos are kept on failure. Output is quiet by default: the line reporter locally, the GitHub and HTML reporters in CI (the report is uploaded as an artifact), and no server logs. Set `E2E_VERBOSE=1` to print the API, worker and web server logs, prefixed with each server's name.
+- **New pages go into the axe check** in `e2e/tests/a11y.spec.ts`, which fails on serious or critical violations.
+- **Locally, Chromium needs its system libraries once:** `sudo npx playwright install-deps chromium` (CI installs them itself).
 
 API tests need the docker-compose services running (`npm run db:up`) and `MIGRATION_DATABASE_URL` in `api/.env`. They never touch dev data: each test app migrates its own throwaway schema in the `payments_test` database as the owner, connects as its own app login role (`payments_app_test`, so privileges are tested for real) and uses its own key prefix in Redis db 15, and all of it is removed afterwards. Override with `TEST_DATABASE_URL` / `TEST_REDIS_URL`. Test behaviour against real Postgres and Redis, not mocks.
 

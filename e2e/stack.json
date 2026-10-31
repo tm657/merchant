@@ -1,0 +1,10 @@
+{
+  "$comment": "The e2e stack's fixed settings, read by e2e/stack.ts and api/scripts/e2e-prepare.ts. Never the dev database or ports.",
+  "database": "payments_e2e",
+  "appRole": "payments_app_e2e",
+  "appPassword": "payments_app_e2e",
+  "redisDb": 14,
+  "apiPort": 4300,
+  "webPort": 3300,
+  "receiverPort": 4600
+}

@@ -2,6 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useRef, useState } from "react";
+import { useSingleFlight } from "@/lib/useSingleFlight";
 import { Dialog } from "@/components/Dialog";
 import { useAnnounce } from "@/components/LiveRegion";
 import { PayoutStatusBadge } from "@/components/PayoutStatusBadge";
@@ -73,9 +74,11 @@ export function PayoutDetailPanel({ orgId, payoutId, role, currentUserId, onClos
   const canReject = Boolean(payout && pending && !mine && can(role, "payout:reject"));
   const canCancel = Boolean(payout && pending && mine && can(role, "payout:create"));
 
+  // One decision at a time, even for two clicks in the same tick.
+  const singleFlight = useSingleFlight();
   const decide = (action: PayoutAction, extra: object = {}) => {
     if (!payout) return;
-    mutation.mutate({ action, body: { version: payout.version, ...extra } });
+    void singleFlight(() => mutation.mutateAsync({ action, body: { version: payout.version, ...extra } }));
   };
   const openDialog = (action: PayoutAction) => {
     mutation.reset();

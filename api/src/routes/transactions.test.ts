@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { makeTestApp } from "../test/helpers.js";
 
 type Item = { id: string; merchant: string; amount: number; currency: string; status: string; createdAt: string };

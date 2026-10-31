@@ -4,6 +4,7 @@ import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-quer
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DataTable, type Column } from "@/components/DataTable";
+import { useCursorStack } from "@/lib/useCursorStack";
 import { useAnnounce } from "@/components/LiveRegion";
 import { useOrgEvents } from "@/components/OrgEvents";
 import { PayoutStatusBadge } from "@/components/PayoutStatusBadge";
@@ -49,12 +50,8 @@ export function PayoutsView({ orgId, role, currentUserId, initialPage, initialSt
   const searchParams = useSearchParams();
   const filters = useMemo(() => parsePayoutFilters(searchParams), [searchParams]);
   const statusKey = filters.status ?? "all";
-
-  // Cursor stack for Prev/Next, tied to one status filter (a new filter starts at page 1).
-  const [pager, setPager] = useState<{ key: string; stack: string[] }>({ key: statusKey, stack: [] });
-  const stack = pager.key === statusKey ? pager.stack : [];
-  const cursor = stack.at(-1) ?? null;
-  const setStack = (next: string[]) => setPager({ key: statusKey, stack: next });
+  // Prev/Next cursors for these filters; a filter change (back/forward too) starts at page 1.
+  const { stack, cursor, setStack } = useCursorStack(statusKey);
 
   const queryClient = useQueryClient();
   const announce = useAnnounce();

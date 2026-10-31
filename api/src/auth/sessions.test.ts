@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { fakeClock, makeTestDb } from "../test/helpers.js";
 import { ABSOLUTE_LIFETIME_MS, createSessionStore, hashToken, IDLE_TIMEOUT_MS } from "./sessions.js";
 

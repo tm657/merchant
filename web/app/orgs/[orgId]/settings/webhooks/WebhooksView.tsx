@@ -3,6 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useId, useState } from "react";
+import { useSingleFlight } from "@/lib/useSingleFlight";
 import { Dialog } from "@/components/Dialog";
 import { useAnnounce } from "@/components/LiveRegion";
 import { adminErrorMessage } from "@/lib/admin-messages";
@@ -47,6 +48,7 @@ export function WebhooksView({ orgId, initial }: Props) {
     | null;
   const [dialog, setDialog] = useState<DialogState>(null);
   const [rowError, setRowError] = useState<string | null>(null);
+  const toggleOnce = useSingleFlight();
 
   const toggle = useMutation({
     mutationFn: (e: WebhookEndpoint) =>
@@ -113,7 +115,7 @@ export function WebhooksView({ orgId, initial }: Props) {
                   </button>
                   <button
                     type="button"
-                    onClick={() => toggle.mutate(e)}
+                    onClick={() => void toggleOnce(() => toggle.mutateAsync(e))}
                     disabled={toggle.isPending}
                     aria-pressed={e.enabled}
                     className="rounded-md border border-zinc-300 px-3 py-1.5 font-medium hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
@@ -252,6 +254,7 @@ function EndpointForm({
     },
   });
 
+  const saveOnce = useSingleFlight();
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     // The shared schema, as the API applies it (the API additionally checks the address).
@@ -264,7 +267,8 @@ function EndpointForm({
     }
     setErrors({});
     setFailure(null);
-    save.mutate({ url: parsed.data.url, description: parsed.data.description, events: parsed.data.events });
+    // Creating twice would make two endpoints: one request per submit, even for a double click.
+    void saveOnce(() => save.mutateAsync({ url: parsed.data.url, description: parsed.data.description, events: parsed.data.events }));
   };
 
   const field = "rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm aria-[invalid=true]:border-red-600 dark:border-zinc-700 dark:bg-zinc-900";
@@ -396,6 +400,7 @@ function ConfirmAction<T>({
   onClose: () => void;
 }) {
   const mutation = useMutation({ mutationFn: run, onSuccess: onDone });
+  const runOnce = useSingleFlight();
   const failure = mutation.data && !mutation.data.ok ? mutation.data : null;
   return (
     <Dialog
@@ -420,7 +425,7 @@ function ConfirmAction<T>({
         <button
           type="button"
           data-autofocus
-          onClick={() => mutation.mutate()}
+          onClick={() => void runOnce(() => mutation.mutateAsync())}
           disabled={mutation.isPending}
           className={`rounded-md px-4 py-2 text-sm font-medium text-white disabled:opacity-50 ${danger ? "bg-red-700 hover:bg-red-800" : "bg-zinc-900 hover:bg-zinc-700 dark:bg-zinc-100 dark:text-zinc-900"}`}
         >

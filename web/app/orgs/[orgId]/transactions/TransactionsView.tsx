@@ -4,6 +4,8 @@ import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-quer
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSingleFlight } from "@/lib/useSingleFlight";
+import { useCursorStack } from "@/lib/useCursorStack";
 import { DataTable, type Column, type SortState } from "@/components/DataTable";
 import { FilterBar, type FilterPatch } from "@/components/FilterBar";
 import { useOrgEvents } from "@/components/OrgEvents";
@@ -117,12 +119,8 @@ export function TransactionsView({ orgId, canExport, initialPage, initialFilters
   const searchParams = useSearchParams();
   const filters = useMemo(() => parseFilters(searchParams), [searchParams]);
   const filtersKey = filtersToSearch(filters).toString();
-
-  // Cursor stack for Prev/Next. It belongs to one set of filters: when the filters
-  // change (including via back/forward), it no longer matches and counts as empty.
-  const [pager, setPager] = useState<{ key: string; stack: string[] }>({ key: filtersKey, stack: [] });
-  const stack = pager.key === filtersKey ? pager.stack : [];
-  const cursor = stack.at(-1) ?? null;
+  // Prev/Next cursors for these filters; a filter change (back/forward too) starts at page 1.
+  const { stack, cursor, setStack } = useCursorStack(filtersKey);
 
   const queryClient = useQueryClient();
   const columns = useMemo(() => columnsFor(orgId), [orgId]);
@@ -160,8 +158,6 @@ export function TransactionsView({ orgId, canExport, initialPage, initialFilters
     (next: SortState<SortKey>) => updateUrl({ sort: next.key, dir: next.dir }),
     [updateUrl],
   );
-
-  const setStack = (next: string[]) => setPager({ key: filtersKey, stack: next });
 
   // "N new transactions": counted per set of filters, since changing filters loads fresh rows.
   const { subscribe } = useOrgEvents();
@@ -285,11 +281,13 @@ function ExportButton({ orgId, filters }: { orgId: string; filters: Filters }) {
   const [state, setState] = useState<{ kind: "idle" } | { kind: "pending" } | { kind: "done" } | { kind: "error"; message: string }>({
     kind: "idle",
   });
-  const start = async () => {
-    setState({ kind: "pending" });
-    const res = await bffPostJson(`/api/orgs/${encodeURIComponent(orgId)}/exports`, filters, exportJobResponseSchema);
-    setState(res.ok ? { kind: "done" } : { kind: "error", message: exportErrorMessage(res) });
-  };
+  const once = useSingleFlight();
+  const start = () =>
+    once(async () => {
+      setState({ kind: "pending" });
+      const res = await bffPostJson(`/api/orgs/${encodeURIComponent(orgId)}/exports`, filters, exportJobResponseSchema);
+      setState(res.ok ? { kind: "done" } : { kind: "error", message: exportErrorMessage(res) });
+    });
   return (
     <div className="flex flex-col items-end gap-1">
       <button

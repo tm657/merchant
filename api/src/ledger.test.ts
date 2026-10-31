@@ -1,6 +1,6 @@
 import type { Payout, PayoutDetail, Transaction } from "@mini-payments/shared";
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { withTransaction } from "./db.js";
 import { ledgerMismatches } from "./ledger.js";
 import { publishOutboxBatch } from "./outbox.js";

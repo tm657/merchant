@@ -10,3 +10,8 @@ node_modules/
 
 # CSV exports written by the reports worker (EXPORT_DIR)
 api/var/
+
+# Playwright e2e output and the e2e stack's seed passwords and exports
+e2e/.cache/
+e2e/playwright-report/
+e2e/test-results/

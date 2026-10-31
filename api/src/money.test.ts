@@ -1,6 +1,6 @@
 import { CURRENCY_EXPONENT, majorToMinor } from "@mini-payments/shared";
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { amountRange } from "./amounts.js";
 import { parseBigint } from "./db.js";
 import { makeTestApp } from "./test/helpers.js";

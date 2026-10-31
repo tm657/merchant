@@ -1,6 +1,6 @@
 import type { AuditEntry, Payout } from "@mini-payments/shared";
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { createPayoutWorker } from "./payouts/worker.js";
 import { makeTestApp, PASSWORD } from "./test/helpers.js";
 

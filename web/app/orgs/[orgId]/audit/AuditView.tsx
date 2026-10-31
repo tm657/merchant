@@ -3,7 +3,9 @@
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useId, useMemo, useState } from "react";
+import { useSingleFlight } from "@/lib/useSingleFlight";
 import { DataTable, type Column } from "@/components/DataTable";
+import { useCursorStack } from "@/lib/useCursorStack";
 import { useAnnounce } from "@/components/LiveRegion";
 import { TableSkeleton } from "@/components/TableSkeleton";
 import { AUDIT_ACTION_LABEL, adminErrorMessage } from "@/lib/admin-messages";
@@ -84,11 +86,8 @@ export function AuditView({ orgId, canExport, members, initialPage, initialFilte
   const queryClient = useQueryClient();
   const announce = useAnnounce();
   const ids = { actor: useId(), action: useId(), from: useId(), to: useId() };
-
-  const [pager, setPager] = useState<{ key: string; stack: string[] }>({ key: filtersKey, stack: [] });
-  const stack = pager.key === filtersKey ? pager.stack : [];
-  const cursor = stack.at(-1) ?? null;
-  const setStack = (next: string[]) => setPager({ key: filtersKey, stack: next });
+  // Prev/Next cursors for these filters; a filter change (back/forward too) starts at page 1.
+  const { stack, cursor, setStack } = useCursorStack(filtersKey);
 
   useState(() => {
     if (initialPage) queryClient.setQueryData(auditKey(orgId, initialFiltersKey, null), initialPage);
@@ -110,6 +109,7 @@ export function AuditView({ orgId, canExport, members, initialPage, initialFilte
   const [exporting, setExporting] = useState(false);
   const [exportError, setExportError] = useState<string | null>(null);
 
+  const exportOnce = useSingleFlight();
   // POST (it's an audited action), then hand the CSV to the browser as a download.
   async function exportCsv() {
     setExporting(true);
@@ -221,7 +221,7 @@ export function AuditView({ orgId, canExport, members, initialPage, initialFilte
         {canExport && (
           <button
             type="button"
-            onClick={() => void exportCsv()}
+            onClick={() => void exportOnce(exportCsv)}
             disabled={exporting}
             className="ml-auto rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium hover:bg-zinc-100 disabled:opacity-50 dark:border-zinc-700 dark:hover:bg-zinc-800"
           >

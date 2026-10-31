@@ -72,16 +72,18 @@ export function OrgEventsProvider({ orgId, children }: { orgId: string; children
       source = new EventSource(`/api/orgs/${encodeURIComponent(orgId)}/events`);
 
       source.onopen = () => {
-        // Balances are cheap: always resync in case an event was missed before the stream opened.
+        // Events can be missed before any open, the first one included: the page was
+        // rendered on the server a moment earlier, and anything that happened in between
+        // went to nobody. Resync whatever shows live state (cheap, and only active queries
+        // refetch).
         void queryClient.invalidateQueries({ queryKey: ["balances", orgId] });
+        void queryClient.invalidateQueries({ queryKey: ["payouts", orgId] });
+        void queryClient.invalidateQueries({ queryKey: ["payout", orgId] });
+        void queryClient.invalidateQueries({ queryKey: ["exports", orgId] });
         if (recovering) {
           // Transaction events may have been missed too. Mark the list stale without
           // refetching, so the visible rows stay put until the user asks for new data.
           void queryClient.invalidateQueries({ queryKey: ["transactions", orgId], refetchType: "none" });
-          // Pay-out changes may have been missed too: refetch whatever is on screen.
-          void queryClient.invalidateQueries({ queryKey: ["payouts", orgId] });
-          void queryClient.invalidateQueries({ queryKey: ["payout", orgId] });
-          void queryClient.invalidateQueries({ queryKey: ["exports", orgId] });
         }
         attempt = 0;
         recovering = false;

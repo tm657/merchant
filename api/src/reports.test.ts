@@ -2,7 +2,7 @@ import { formatMinorUnits, type ExportJob, type SettlementsResponse } from "@min
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { csvAmount, csvText } from "./csv.js";
 import { withTransaction } from "./db.js";
 import type { OrgEvent } from "./events.js";

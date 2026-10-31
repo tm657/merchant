@@ -1,6 +1,6 @@
 import { canTransition, PAYOUT_STATUSES, parseMoneyInput, type Payout, type PayoutDetail } from "@mini-payments/shared";
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { fakeClock, makeTestApp } from "../test/helpers.js";
 
 type T = Awaited<ReturnType<typeof makeTestApp>>;

@@ -1,6 +1,6 @@
 import type { Payout, PayoutDetail } from "@mini-payments/shared";
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { publishOutboxBatch } from "../outbox.js";
 import { deadRedis, fakeClock, makeTestApp, makeTestRedis } from "../test/helpers.js";
 import { openStream } from "../test/sse.js";

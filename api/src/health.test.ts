@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { createDb } from "./db.js";
 import { deadRedis, fakeClock, makeTestApp } from "./test/helpers.js";
 

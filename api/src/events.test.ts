@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { describe, it } from "vitest";
 import { fakeClock, makeTestApp } from "./test/helpers.js";
 import { openStream } from "./test/sse.js";
 

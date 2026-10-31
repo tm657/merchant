@@ -2,7 +2,7 @@ import { webhookEventSchema, type Payout, type WebhookDeliveriesPage, type Webho
 import assert from "node:assert/strict";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
-import { after, describe, it } from "node:test";
+import { describe, it, onTestFinished } from "vitest";
 import { verifyWebhookSignature } from "../../scripts/webhook-receiver.js";
 import { publishOutboxBatch } from "../outbox.js";
 import { makeTestApp, TEST_WEBHOOK_KEY, TEST_WEBHOOK_POLICY } from "../test/helpers.js";
@@ -27,7 +27,9 @@ async function receiver(handler: (req: http.IncomingMessage, res: http.ServerRes
     });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-  after(() => server.close());
+  onTestFinished(() => {
+    server.close();
+  });
   return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/hook`, received, server };
 }
 
