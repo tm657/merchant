@@ -49,7 +49,7 @@ export function BalanceCards({ orgId, initialBalances }: Props) {
           if (!known) return old;
           return {
             balances: old.balances.map((b) =>
-              b.currency === event.currency ? { ...b, available: event.available } : b,
+              b.currency === event.currency ? { ...b, available: event.available, reserved: event.reserved } : b,
             ),
           };
         });
@@ -94,6 +94,10 @@ export function BalanceCards({ orgId, initialBalances }: Props) {
             <li key={b.currency} className="rounded-lg border border-zinc-200 p-4 dark:border-zinc-800">
               <p className="text-xs font-medium text-zinc-500">{b.currency}</p>
               <p className="mt-1 text-xl font-semibold tabular-nums">{formatMoney(b.available, b.currency)}</p>
+              {/* Only roles with balances:read ever render this component. */}
+              <p className="mt-1 text-xs tabular-nums text-zinc-500">
+                Reserved for pay-outs: {formatMoney(b.reserved, b.currency)}
+              </p>
             </li>
           ))}
         </ul>

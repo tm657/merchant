@@ -5,10 +5,12 @@ import type { Clock } from "./auth/sessions.js";
 import type { Db } from "./db.js";
 import { EventBus } from "./events.js";
 import { healthRoutes, type ReadinessCheck } from "./health.js";
+import { createPayoutService } from "./payouts/service.js";
 import { genReqId, requestIdHeader } from "./requestId.js";
 import { authRoutes } from "./routes/auth.js";
 import { balancesRoutes } from "./routes/balances.js";
 import { eventsRoutes } from "./routes/events.js";
+import { payoutsRoutes } from "./routes/payouts.js";
 import { transactionsRoutes } from "./routes/transactions.js";
 
 type Options = {
@@ -57,6 +59,7 @@ export function buildApp({
 
   const bus = new EventBus(redis, subscriber, app.log, redisPrefix);
   const auth = createAuthContext(db, redis, clock, redisPrefix);
+  const payouts = createPayoutService(db, clock);
 
   healthRoutes(app, {
     postgres: () => db.query("SELECT 1"),
@@ -75,7 +78,8 @@ export function buildApp({
     transactionsRoutes(orgScope, db);
     balancesRoutes(orgScope, db);
     eventsRoutes(orgScope, db, bus, auth, { maxStreamsPerOrg });
+    payoutsRoutes(orgScope, payouts, auth.limiters.payoutCreate);
   });
 
-  return { app, bus, auth };
+  return { app, bus, auth, payouts };
 }

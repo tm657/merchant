@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { hashPassword } from "./auth/password.js";
-import { CURRENCIES, type Currency, type Role, type Status } from "@mini-payments/shared";
+import { CURRENCIES, majorToMinor, type Currency, type Role, type Status } from "@mini-payments/shared";
 import { amountRange } from "./amounts.js";
 import { configSchema, parseEnv } from "./config.js";
 import { createDb, withTransaction } from "./db.js";
@@ -118,13 +118,21 @@ for (const org of ORGS) {
   }
 }
 
+const DEMO_PAYOUTS: { major: number; currency: Currency; beneficiary: string; account: string; reference: string }[] = [
+  { major: 250, currency: "USD", beneficiary: "Acme Supplies LLC", account: "US1234567890", reference: "Invoice 1042" },
+  { major: 1_500_000, currency: "IDR", beneficiary: "PT Kopi Nusantara", account: "ID0098765432", reference: "Beans, March" },
+  { major: 12_000, currency: "PHP", beneficiary: "Manila Logistics Inc", account: "PH5566778899", reference: "Freight" },
+];
+
 const BATCH = 1000;
 const nowIso = new Date(now).toISOString();
 const db = createDb(DATABASE_URL);
 
 try {
   await withTransaction(db, async (tx) => {
-    await tx.query("TRUNCATE sessions, memberships, users, balances, transactions, orgs");
+    await tx.query(
+      "TRUNCATE outbox, idempotency_keys, payout_events, payouts, sessions, memberships, users, balances, transactions, orgs",
+    );
 
     for (const org of ORGS) await tx.query("INSERT INTO orgs (id, name) VALUES ($1, $2)", [org.id, org.name]);
 
@@ -161,8 +169,26 @@ try {
        GROUP BY org_id, currency`,
       [nowIso],
     );
+
+    // Demo pay-outs: Bob (finance) asks, so Alice (admin, org_1) can approve or reject.
+    for (const [i, p] of DEMO_PAYOUTS.entries()) {
+      const id = `po_demo-${i + 1}`;
+      const at = new Date(now - (DEMO_PAYOUTS.length - i) * 60_000).toISOString();
+      await tx.query(
+        `INSERT INTO payouts (id, org_id, amount, currency, beneficiary_name, account_number, reference,
+                              status, version, created_by, created_at, updated_at)
+         VALUES ($1, 'org_1', $2, $3, $4, $5, $6, 'pending_approval', 1, 'usr_2', $7, $7)`,
+        [id, majorToMinor(p.major, p.currency), p.currency, p.beneficiary, p.account, p.reference, at],
+      );
+      await tx.query(
+        `INSERT INTO payout_events (payout_id, from_status, to_status, actor_id, created_at)
+         VALUES ($1, NULL, 'pending_approval', 'usr_2', $2)`,
+        [id, at],
+      );
+    }
   });
 
+  console.table((await db.query("SELECT id, currency, amount, beneficiary_name, status FROM payouts ORDER BY created_at")).rows);
   const counts = await db.query(
     "SELECT org_id, status, COUNT(*) AS n FROM transactions GROUP BY org_id, status ORDER BY org_id, status",
   );

@@ -1,4 +1,4 @@
-import type { z } from "zod";
+import { z } from "zod";
 import { errorBodySchema } from "@mini-payments/shared";
 
 /** An error response from our own BFF, as seen by browser code. */
@@ -39,4 +39,44 @@ export function safeNextPath(next: string | null | undefined): string {
     return "/";
   }
   return next;
+}
+
+export type BffResult<T> =
+  | { ok: true; status: number; data: T; headers: Headers }
+  /** status 0: the request never got an answer (network error), so the outcome is unknown. */
+  | { ok: false; status: number; code: string; retryAfter?: number; issues?: { path: string; message: string }[] };
+
+const issuesSchema = z.object({ issues: z.array(z.object({ path: z.string(), message: z.string() })) });
+
+/** POST JSON to a BFF route and validate the answer. Never throws for HTTP or network errors. */
+export async function bffPostJson<T>(
+  url: string,
+  payload: unknown,
+  schema: z.ZodType<T>,
+  headers: Record<string, string> = {},
+): Promise<BffResult<T>> {
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(payload),
+    });
+  } catch {
+    return { ok: false, status: 0, code: "network" };
+  }
+  const body: unknown = await res.json().catch(() => null);
+  if (!res.ok) {
+    return {
+      ok: false,
+      status: res.status,
+      code: errorBodySchema.safeParse(body).data?.error ?? "unknown_error",
+      retryAfter: Number(res.headers.get("retry-after")) || undefined,
+      issues: issuesSchema.safeParse(body).data?.issues,
+    };
+  }
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) return { ok: false, status: res.status, code: "bad_response" };
+  return { ok: true, status: res.status, data: parsed.data, headers: res.headers };
 }

@@ -2,13 +2,20 @@
 export const ROLES = ["admin", "finance", "support"] as const;
 export type Role = (typeof ROLES)[number];
 
-export const PERMISSIONS = ["transactions:read", "balances:read"] as const;
+export const PERMISSIONS = [
+  "transactions:read",
+  "balances:read",
+  "payout:read",
+  "payout:create",
+  "payout:approve",
+  "payout:reject",
+] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
 const GRANTS: Record<Role, readonly Permission[]> = {
-  admin: ["transactions:read", "balances:read"],
-  finance: ["transactions:read", "balances:read"],
-  support: ["transactions:read"],
+  admin: ["transactions:read", "balances:read", "payout:read", "payout:create", "payout:approve", "payout:reject"],
+  finance: ["transactions:read", "balances:read", "payout:read", "payout:create"],
+  support: ["transactions:read", "payout:read"],
 };
 
 /**

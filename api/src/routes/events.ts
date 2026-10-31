@@ -13,8 +13,10 @@ const MAX_BUFFERED_BYTES = 64 * 1024;
 function format(event: OrgEvent): string {
   const data =
     event.type === "balance"
-      ? { currency: event.currency, available: event.available }
-      : { count: event.count };
+      ? { currency: event.currency, available: event.available, reserved: event.reserved }
+      : event.type === "payout"
+        ? { payoutId: event.payoutId, status: event.status, version: event.version }
+        : { count: event.count };
   return `event: ${event.type}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
@@ -42,6 +44,7 @@ export function eventsRoutes(
     const orgAuth = req.orgAuth;
     if (!orgAuth) return reply.code(401).send({ error: "unauthenticated" });
     const canSeeBalances = can(orgAuth.role, "balances:read");
+    const canSeePayouts = can(orgAuth.role, "payout:read");
 
     const open = openPerOrg.get(orgId) ?? 0;
     if (open >= maxStreamsPerOrg) {
@@ -80,6 +83,7 @@ export function eventsRoutes(
     try {
       unsubscribe = await bus.subscribe(orgId, (event) => {
         if (event.type === "balance" && !canSeeBalances) return;
+        if (event.type === "payout" && !canSeePayouts) return;
         send(format(event));
       });
     } catch (err) {

@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { Suspense } from "react";
 import { LogoutButton } from "@/components/LogoutButton";
+import { OrgNav } from "@/components/OrgNav";
 import { OrgSwitcher } from "@/components/OrgSwitcher";
 import { UserCacheGuard } from "@/components/UserCacheGuard";
 import { requireUser } from "@/lib/auth.server";
@@ -29,6 +30,7 @@ async function Header({ params }: { params: LayoutProps<"/orgs/[orgId]">["params
         </Link>
         {current && <span className="text-sm font-medium">{current.orgName}</span>}
       </div>
+      {current && <OrgNav orgId={orgId} />}
       <OrgSwitcher memberships={me.memberships} currentOrgId={orgId} />
       <div className="flex items-center gap-3 text-sm">
         <span className="text-zinc-600 dark:text-zinc-400">

@@ -1,15 +1,23 @@
-import { balanceEventSchema, transactionsEventSchema } from "@mini-payments/shared";
+import { balanceEventSchema, payoutEventSchema, transactionsEventSchema } from "@mini-payments/shared";
 import type { FastifyBaseLogger } from "fastify";
 import type { Redis } from "ioredis";
 import { z } from "zod";
 
-const orgEventSchema = z.discriminatedUnion("type", [
+export const orgEventSchema = z.discriminatedUnion("type", [
   balanceEventSchema.extend({ type: z.literal("balance") }),
   transactionsEventSchema.extend({ type: z.literal("transactions") }),
+  payoutEventSchema.extend({ type: z.literal("payout") }),
 ]);
 export type OrgEvent = z.infer<typeof orgEventSchema>;
 
 type Listener = (event: OrgEvent) => void;
+
+export const orgChannel = (prefix: string, orgId: string) => `${prefix}events:org:${orgId}`;
+
+/** Publishes to every API instance. Needs only a command connection (the worker uses this). */
+export async function publishOrgEvent(redis: Redis, prefix: string, orgId: string, event: OrgEvent): Promise<void> {
+  await redis.publish(orgChannel(prefix, orgId), JSON.stringify(orgEventSchema.parse(event)));
+}
 
 /**
  * Org-scoped pub/sub over Redis, so an event published by any API instance reaches SSE
@@ -31,7 +39,7 @@ export class EventBus {
   }
 
   private channel(orgId: string): string {
-    return `${this.prefix}events:org:${orgId}`;
+    return orgChannel(this.prefix, orgId);
   }
 
   private deliver(channel: string, message: string) {
@@ -90,6 +98,6 @@ export class EventBus {
 
   /** Rejects if Redis is unavailable. */
   async publish(orgId: string, event: OrgEvent): Promise<void> {
-    await this.publisher.publish(this.channel(orgId), JSON.stringify(event));
+    await publishOrgEvent(this.publisher, this.prefix, orgId, event);
   }
 }

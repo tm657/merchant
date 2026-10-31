@@ -4,8 +4,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   balanceEventSchema,
+  payoutEventSchema,
   transactionsEventSchema,
   type BalanceEvent,
+  type PayoutEvent,
 } from "@mini-payments/shared";
 
 export type StreamStatus = "connecting" | "live" | "reconnecting";
@@ -13,6 +15,7 @@ export type StreamStatus = "connecting" | "live" | "reconnecting";
 type Handlers = {
   balance: (event: BalanceEvent) => void;
   transactions: (count: number) => void;
+  payout: (event: PayoutEvent) => void;
 };
 type EventType = keyof Handlers;
 
@@ -48,6 +51,7 @@ export function OrgEventsProvider({ orgId, children }: { orgId: string; children
   const [listeners] = useState(() => ({
     balance: new Set<Handlers["balance"]>(),
     transactions: new Set<Handlers["transactions"]>(),
+    payout: new Set<Handlers["payout"]>(),
   }));
 
   // Status is tagged with its org, so a new org starts as "connecting" without an effect.
@@ -70,6 +74,9 @@ export function OrgEventsProvider({ orgId, children }: { orgId: string; children
           // Transaction events may have been missed too. Mark the list stale without
           // refetching, so the visible rows stay put until the user asks for new data.
           void queryClient.invalidateQueries({ queryKey: ["transactions", orgId], refetchType: "none" });
+          // Pay-out changes may have been missed too: refetch whatever is on screen.
+          void queryClient.invalidateQueries({ queryKey: ["payouts", orgId] });
+          void queryClient.invalidateQueries({ queryKey: ["payout", orgId] });
         }
         attempt = 0;
         recovering = false;
@@ -84,6 +91,11 @@ export function OrgEventsProvider({ orgId, children }: { orgId: string; children
       source.addEventListener("transactions", (e) => {
         const parsed = transactionsEventSchema.safeParse(parseJson(e.data));
         if (parsed.success) for (const fn of listeners.transactions) fn(parsed.data.count);
+      });
+
+      source.addEventListener("payout", (e) => {
+        const parsed = payoutEventSchema.safeParse(parseJson(e.data));
+        if (parsed.success) for (const fn of listeners.payout) fn(parsed.data);
       });
 
       // EventSource would retry on its own at a fixed rate; close it and back off instead.

@@ -14,7 +14,9 @@
     "migrate:create": "node-pg-migrate create --migrations-dir migrations --migration-file-language sql",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test 'src/**/*.test.ts'"
+    "test": "node --import tsx --test 'src/**/*.test.ts'",
+    "worker": "tsx src/worker.ts",
+    "dev:worker": "tsx watch src/worker.ts"
   },
   "dependencies": {
     "@mini-payments/shared": "*",

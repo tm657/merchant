@@ -83,7 +83,8 @@ export const apiTransactionsQuerySchema = z
 
 // ---- Balances --------------------------------------------------------------
 
-export const balanceSchema = z.object({ currency: currencySchema, available: minorUnitsSchema });
+/** `reserved`: held for approved pay-outs that haven't been paid or failed yet. */
+export const balanceSchema = z.object({ currency: currencySchema, available: minorUnitsSchema, reserved: minorUnitsSchema });
 export const balancesSchema = z.object({ balances: z.array(balanceSchema) });
 export type Balances = z.infer<typeof balancesSchema>;
 

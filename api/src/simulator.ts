@@ -40,15 +40,15 @@ export function startSimulator(db: Db, bus: EventBus, log: FastifyBaseLogger) {
       );
       if (status !== "success") return null;
       // Upsert, so an org with no balance row yet for this currency still works.
-      const { rows } = await tx.query<{ available: number }>(
+      const { rows } = await tx.query<{ available: number; reserved: number }>(
         `INSERT INTO balances (org_id, currency, available, updated_at) VALUES ($1, $2, $3, $4)
          ON CONFLICT (org_id, currency) DO UPDATE
            SET available = balances.available + excluded.available, updated_at = excluded.updated_at
-         RETURNING available`,
+         RETURNING available, reserved`,
         [orgId, currency, amount, now],
       );
       const row = rows[0];
-      return row ? { currency: currency as Currency, available: row.available } : null;
+      return row ? { currency: currency as Currency, available: row.available, reserved: row.reserved } : null;
     });
   }
 

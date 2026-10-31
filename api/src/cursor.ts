@@ -26,3 +26,20 @@ export function decodeCursor(raw: string): Cursor | null {
     return null;
   }
 }
+
+// Pay-outs are always listed newest first, so their cursor is just the last row's position.
+const payoutCursorSchema = z.object({ v: z.iso.datetime(), id: z.string().min(1) });
+export type PayoutCursor = z.infer<typeof payoutCursorSchema>;
+
+export function encodePayoutCursor(cursor: PayoutCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+export function decodePayoutCursor(raw: string): PayoutCursor | null {
+  try {
+    const parsed = payoutCursorSchema.safeParse(JSON.parse(Buffer.from(raw, "base64url").toString("utf8")));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}

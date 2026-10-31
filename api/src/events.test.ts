@@ -1,36 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { fakeClock, makeTestApp } from "./test/helpers.js";
-
-/** Opens an SSE stream on a listening app and collects the events it receives. */
-async function openStream(baseUrl: string, token: string) {
-  const ctrl = new AbortController();
-  const res = await fetch(`${baseUrl}/orgs/org_1/events`, { headers: { authorization: `Bearer ${token}` }, signal: ctrl.signal });
-  assert.equal(res.status, 200);
-  const reader = res.body!.pipeThrough(new TextDecoderStream()).getReader();
-  let buffer = "";
-  return {
-    /** Resolves with the next `event: <name>` frame's data. */
-    async next(name: string, timeoutMs = 3000): Promise<unknown> {
-      const deadline = Date.now() + timeoutMs;
-      for (;;) {
-        const match = buffer.match(new RegExp(`event: ${name}\\ndata: (.*)\\n\\n`));
-        if (match) {
-          buffer = buffer.slice(match.index! + match[0].length);
-          return JSON.parse(match[1]!);
-        }
-        if (Date.now() > deadline) throw new Error(`no ${name} event within ${timeoutMs} ms`);
-        const { value, done } = await Promise.race([
-          reader.read(),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("read timed out")), timeoutMs)),
-        ]);
-        if (done) throw new Error("stream ended");
-        buffer += value;
-      }
-    },
-    close: () => ctrl.abort(),
-  };
-}
+import { openStream } from "./test/sse.js";
 
 describe("events across API instances", () => {
   it("an event published by one instance reaches an SSE client on another", async () => {
@@ -44,8 +15,8 @@ describe("events across API instances", () => {
     try {
       await b.bus.publish("org_1", { type: "transactions", count: 1 });
       assert.deepEqual(await stream.next("transactions"), { count: 1 });
-      await b.bus.publish("org_1", { type: "balance", currency: "IDR", available: 15_000 });
-      assert.deepEqual(await stream.next("balance"), { currency: "IDR", available: 15_000 });
+      await b.bus.publish("org_1", { type: "balance", currency: "IDR", available: 15_000, reserved: 0 });
+      assert.deepEqual(await stream.next("balance"), { currency: "IDR", available: 15_000, reserved: 0 });
     } finally {
       stream.close();
     }
@@ -58,7 +29,7 @@ describe("events across API instances", () => {
     const url = await a.app.listen({ port: 0, host: "127.0.0.1" });
     const stream = await openStream(url, await a.tokenFor("support@test.com"));
     try {
-      await b.bus.publish("org_1", { type: "balance", currency: "USD", available: 1 });
+      await b.bus.publish("org_1", { type: "balance", currency: "USD", available: 1, reserved: 0 });
       await b.bus.publish("org_1", { type: "transactions", count: 2 });
       // The transactions event arrives; the balance event before it never does.
       assert.deepEqual(await stream.next("transactions"), { count: 2 });

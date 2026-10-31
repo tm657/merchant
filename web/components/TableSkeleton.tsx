@@ -1,6 +1,14 @@
-export function TableSkeleton({ rows = 8, withFilterBar = false }: { rows?: number; withFilterBar?: boolean }) {
+export function TableSkeleton({
+  rows = 8,
+  withFilterBar = false,
+  label = "Loading transactions",
+}: {
+  rows?: number;
+  withFilterBar?: boolean;
+  label?: string;
+}) {
   return (
-    <div role="status" aria-label="Loading transactions" className="flex flex-col gap-3">
+    <div role="status" aria-label={label} className="flex flex-col gap-3">
       {withFilterBar && <div className="h-14 animate-pulse rounded-md bg-zinc-100 dark:bg-zinc-900" />}
       <div className="overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
         <div className="h-9 bg-zinc-50 dark:bg-zinc-900" />

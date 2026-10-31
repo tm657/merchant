@@ -28,6 +28,6 @@ describe("money", () => {
     const t = await makeTestApp();
     await t.db.query("UPDATE balances SET available = 12345678901234 WHERE org_id = 'org_1'");
     const res = await t.get("/orgs/org_1/balances", await t.tokenFor("admin@test.com"));
-    assert.deepEqual(res.json(), { balances: [{ currency: "USD", available: 12_345_678_901_234 }] });
+    assert.deepEqual(res.json(), { balances: [{ currency: "USD", available: 12_345_678_901_234, reserved: 0 }] });
   });
 });

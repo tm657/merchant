@@ -4,12 +4,21 @@ import type { z } from "zod";
 import {
   balancesSchema,
   errorBodySchema,
+  IDEMPOTENCY_KEY_HEADER,
+  IDEMPOTENT_REPLAYED_HEADER,
   loginResponseSchema,
   meSchema,
+  payoutDetailSchema,
+  payoutResponseSchema,
+  payoutsPageSchema,
   REQUEST_ID_HEADER,
   transactionsPageSchema,
   type Balances,
+  type CreatePayoutBody,
   type Me,
+  type PayoutAction,
+  type PayoutDetail,
+  type PayoutsPage,
   type TransactionsPage,
 } from "@mini-payments/shared";
 import { getConfig } from "./config.server";
@@ -64,6 +73,8 @@ async function request(path: string, init: RequestInit & { timeout?: boolean } =
   }
 }
 
+const PASS_THROUGH_403 = new Set(["self_approval_forbidden", "self_rejection_forbidden", "not_creator"]);
+
 /** Maps an upstream error response to the status the BFF returns. */
 async function toUpstreamError(res: Response): Promise<UpstreamError> {
   const code = errorBodySchema.safeParse(await res.json().catch(() => null)).data?.error;
@@ -73,13 +84,19 @@ async function toUpstreamError(res: Response): Promise<UpstreamError> {
     case 401:
       return new UpstreamError(401, code ?? "unauthenticated");
     case 403:
-      return new UpstreamError(403, "forbidden");
+      // Pay-out rules the UI explains; every other 403 stays a plain "forbidden".
+      return new UpstreamError(403, code && PASS_THROUGH_403.has(code) ? code : "forbidden");
     case 404:
-      // Only a missing org is the caller's 404. Any other 404 (e.g. an API build without
-      // this route) is a server problem, so don't pass it off as a clean 404.
-      return code === "org_not_found"
+      // Only a missing org or pay-out is the caller's 404. Any other 404 (e.g. an API build
+      // without this route) is a server problem, so don't pass it off as a clean 404.
+      return code === "org_not_found" || code === "payout_not_found"
         ? new UpstreamError(404, code)
         : new UpstreamError(502, "upstream_route_not_found");
+    case 409:
+      // version_conflict, invalid_transition, insufficient_funds, ...
+      return new UpstreamError(409, code ?? "conflict");
+    case 422:
+      return new UpstreamError(422, code ?? "unprocessable");
     case 429:
       return new UpstreamError(429, code ?? "too_many_attempts", res.headers.get("retry-after") ?? undefined);
     case 503:
@@ -114,6 +131,46 @@ export function fetchBalances(orgId: string): Promise<Balances> {
 
 export function fetchMe(): Promise<Me> {
   return getJson("/me", meSchema);
+}
+
+// ---- Pay-outs ------------------------------------------------------------------
+
+async function postJson<T>(path: string, body: unknown, schema: z.ZodType<T>, extraHeaders: Record<string, string> = {}) {
+  const res = await request(path, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json", ...extraHeaders, ...(await authHeader()) },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await toUpstreamError(res);
+  const parsed = schema.safeParse(await res.json().catch(() => null));
+  if (!parsed.success) {
+    await log.error("api response failed validation", { path, issues: parsed.error.issues.slice(0, 5) });
+    throw new UpstreamError(502, "bad_upstream_response");
+  }
+  return { status: res.status, headers: res.headers, data: parsed.data };
+}
+
+const payoutPath = (orgId: string, payoutId: string) => `${orgPath(orgId)}/payouts/${encodeURIComponent(payoutId)}`;
+
+export function fetchPayouts(orgId: string, query: URLSearchParams): Promise<PayoutsPage> {
+  const qs = query.toString();
+  return getJson(`${orgPath(orgId)}/payouts${qs ? `?${qs}` : ""}`, payoutsPageSchema);
+}
+
+export function fetchPayout(orgId: string, payoutId: string): Promise<PayoutDetail> {
+  return getJson(payoutPath(orgId, payoutId), payoutDetailSchema);
+}
+
+/** Forwards the browser's Idempotency-Key; reports whether the API replayed a stored response. */
+export async function createPayout(orgId: string, body: CreatePayoutBody, idempotencyKey: string) {
+  const res = await postJson(`${orgPath(orgId)}/payouts`, body, payoutResponseSchema, {
+    [IDEMPOTENCY_KEY_HEADER]: idempotencyKey,
+  });
+  return { status: res.status, replayed: res.headers.get(IDEMPOTENT_REPLAYED_HEADER) === "true", data: res.data };
+}
+
+export async function decidePayout(orgId: string, payoutId: string, action: PayoutAction, body: unknown) {
+  return (await postJson(`${payoutPath(orgId, payoutId)}/${action}`, body, payoutResponseSchema)).data;
 }
 
 /**

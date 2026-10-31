@@ -91,6 +91,8 @@ export function createLimiters(redis: Redis, clock: Clock = Date.now, prefix = "
     // Every registration attempt counts.
     registerEmail: limiter("register-email", { max: 3, windowMs: 15 * MINUTE, lockoutMs: 15 * MINUTE }),
     registerIp: limiter("register-ip", { max: 5, windowMs: 15 * MINUTE, lockoutMs: 15 * MINUTE }),
+    // New pay-outs per user (idempotent replays don't count).
+    payoutCreate: limiter("payout-create", { max: 10, windowMs: MINUTE, lockoutMs: MINUTE }),
   };
 }
 

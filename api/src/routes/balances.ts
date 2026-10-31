@@ -14,8 +14,8 @@ export function balancesRoutes(app: FastifyInstance, db: Db) {
       return reply.code(403).send({ error: "forbidden" });
     }
 
-    const { rows: balances } = await db.query<{ currency: Currency; available: number }>(
-      `SELECT currency, available FROM balances WHERE org_id = $1 ORDER BY currency COLLATE "C"`,
+    const { rows: balances } = await db.query<{ currency: Currency; available: number; reserved: number }>(
+      `SELECT currency, available, reserved FROM balances WHERE org_id = $1 ORDER BY currency COLLATE "C"`,
       [orgId],
     );
     return { balances };

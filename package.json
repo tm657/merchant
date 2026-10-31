@@ -17,6 +17,7 @@
     "test": "npm run test --workspaces --if-present",
     "db:up": "docker compose up -d --wait",
     "db:migrate": "npm run migrate -w api --",
-    "db:seed": "npm run seed -w api"
+    "db:seed": "npm run seed -w api",
+    "dev:worker": "npm run dev:worker -w api"
   }
 }
