@@ -1,7 +1,8 @@
-import type Database from "better-sqlite3";
 import Fastify, { LogController, type FastifyServerOptions } from "fastify";
+import type { Redis } from "ioredis";
 import { createAuthContext, requireOrgMember } from "./auth/context.js";
 import type { Clock } from "./auth/sessions.js";
+import type { Db } from "./db.js";
 import { EventBus } from "./events.js";
 import { healthRoutes, type ReadinessCheck } from "./health.js";
 import { genReqId, requestIdHeader } from "./requestId.js";
@@ -11,10 +12,16 @@ import { eventsRoutes } from "./routes/events.js";
 import { transactionsRoutes } from "./routes/transactions.js";
 
 type Options = {
-  db: Database.Database;
+  db: Db;
+  /** Command connection: rate limits, publishing events, /readyz. */
+  redis: Redis;
+  /** Dedicated pub/sub connection for receiving events. */
+  subscriber: Redis;
   clock?: Clock;
   logger?: FastifyServerOptions["logger"];
-  /** Dependencies /readyz checks, by name. SQLite is always included. */
+  /** Prefix for every Redis key and channel (tests use one per app). */
+  redisPrefix?: string;
+  /** Extra or replacement /readyz checks, by name (tests use this). */
   readiness?: Record<string, ReadinessCheck>;
   trustProxy?: string;
   maxStreamsPerOrg?: number;
@@ -23,8 +30,11 @@ type Options = {
 /** Builds the app without listening, so tests can use app.inject(). */
 export function buildApp({
   db,
+  redis,
+  subscriber,
   clock = Date.now,
   logger = false,
+  redisPrefix = "",
   readiness = {},
   // Only the BFF on this machine may set X-Forwarded-For (it forwards the browser's IP
   // for rate limiting). From anywhere else the header is ignored.
@@ -45,11 +55,16 @@ export function buildApp({
   app.decorateRequest("orgAuth", null);
   requestIdHeader(app);
 
-  const bus = new EventBus();
-  const auth = createAuthContext(db, clock);
+  const bus = new EventBus(redis, subscriber, app.log, redisPrefix);
+  const auth = createAuthContext(db, redis, clock, redisPrefix);
 
   healthRoutes(app, {
-    sqlite: async () => db.prepare("SELECT 1").get(),
+    postgres: () => db.query("SELECT 1"),
+    redis: async () => {
+      await redis.ping();
+      // Without the subscriber, SSE clients on this instance would miss every event.
+      if (subscriber.status !== "ready") throw new Error(`redis subscriber is ${subscriber.status}`);
+    },
     ...readiness,
   });
   authRoutes(app, auth);

@@ -9,7 +9,7 @@ const moneyFormatters = new Map<Currency, Intl.NumberFormat>();
 function moneyFormatter(currency: Currency): Intl.NumberFormat {
   let f = moneyFormatters.get(currency);
   if (!f) {
-    // Show exactly as many decimals as the currency's minor units, per our ISO 4217 table.
+    // Show exactly as many decimals as the currency exponent table says (IDR: none).
     const digits = CURRENCY_EXPONENT[currency];
     f = new Intl.NumberFormat(LOCALE, {
       style: "currency",

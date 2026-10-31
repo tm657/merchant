@@ -1,7 +1,7 @@
-import type Database from "better-sqlite3";
 import type { FastifyInstance } from "fastify";
 import { apiTransactionsQuerySchema as querySchema, type Currency, type Status } from "@mini-payments/shared";
 import { decodeCursor, encodeCursor, type Sort } from "../cursor.js";
+import type { Db } from "../db.js";
 import { badRequest, orgExists, orgParams } from "./common.js";
 
 // Whitelist: the only strings ever interpolated into SQL.
@@ -24,42 +24,30 @@ const nextDay = (date: string) =>
 
 const escapeLike = (s: string) => s.replace(/[\\%_]/g, (c) => `\\${c}`);
 
-export function transactionsRoutes(app: FastifyInstance, db: Database.Database) {
-  app.get("/orgs/:orgId/transactions", (req, reply) => {
+export function transactionsRoutes(app: FastifyInstance, db: Db) {
+  app.get("/orgs/:orgId/transactions", async (req, reply) => {
     const params = orgParams.safeParse(req.params);
     if (!params.success) return badRequest(reply, params.error);
     const { orgId } = params.data;
-    if (!orgExists(db, orgId)) return reply.code(404).send({ error: "org_not_found" });
+    if (!(await orgExists(db, orgId))) return reply.code(404).send({ error: "org_not_found" });
 
     const parsed = querySchema.safeParse(req.query);
     if (!parsed.success) return badRequest(reply, parsed.error);
     const { status, currency, from, to, q, sort, dir, cursor: rawCursor, limit } = parsed.data;
 
     const col = SORT_COLUMN[sort];
-    const where: string[] = ["org_id = ?"];
-    const args: (string | number)[] = [orgId];
+    const args: (string | number)[] = [];
+    // Adds a bind parameter and returns its placeholder ($1, $2, ...).
+    const arg = (value: string | number) => `$${args.push(value)}`;
+    const where: string[] = [`org_id = ${arg(orgId)}`];
 
-    if (status) {
-      where.push("status = ?");
-      args.push(status);
-    }
-    if (currency) {
-      where.push("currency = ?");
-      args.push(currency);
-    }
-    // created_at is always a UTC ISO string from toISOString(), so string compare is correct.
-    if (from) {
-      where.push("created_at >= ?");
-      args.push(`${from}T00:00:00.000Z`);
-    }
-    if (to) {
-      where.push("created_at < ?");
-      args.push(nextDay(to));
-    }
+    if (status) where.push(`status = ${arg(status)}`);
+    if (currency) where.push(`currency = ${arg(currency)}`);
+    if (from) where.push(`created_at >= ${arg(`${from}T00:00:00.000Z`)}::timestamptz`);
+    if (to) where.push(`created_at < ${arg(nextDay(to))}::timestamptz`);
     if (q) {
-      // SQLite LIKE is case-insensitive for ASCII.
-      where.push("merchant LIKE ? ESCAPE '\\'");
-      args.push(`%${escapeLike(q)}%`);
+      // ILIKE: case-insensitive, like SQLite's LIKE was for ASCII.
+      where.push(`merchant ILIKE ${arg(`%${escapeLike(q)}%`)} ESCAPE '\\'`);
     }
     if (rawCursor) {
       const cursor = decodeCursor(rawCursor);
@@ -67,20 +55,20 @@ export function transactionsRoutes(app: FastifyInstance, db: Database.Database) 
       if (cursor.s !== sort || cursor.d !== dir) {
         return reply.code(400).send({ error: "cursor_sort_mismatch" });
       }
-      where.push(`(${col}, id) ${dir === "asc" ? ">" : "<"} (?, ?)`);
-      args.push(cursor.v, cursor.id);
+      const cast = sort === "createdAt" ? "timestamptz" : "bigint";
+      // Row comparison on (sort column, id); ids are COLLATE "C", so ties break by byte order.
+      where.push(`(${col}, id) ${dir === "asc" ? ">" : "<"} (${arg(cursor.v)}::${cast}, ${arg(cursor.id)})`);
     }
 
     const sqlDir = dir === "asc" ? "ASC" : "DESC";
-    const rows = db
-      .prepare<(string | number)[], Row>(
-        `SELECT id, merchant, amount, currency, status, created_at
-         FROM transactions
-         WHERE ${where.join(" AND ")}
-         ORDER BY ${col} ${sqlDir}, id ${sqlDir}
-         LIMIT ?`,
-      )
-      .all(...args, limit + 1);
+    const { rows } = await db.query<Row>(
+      `SELECT id, merchant, amount, currency, status, created_at
+       FROM transactions
+       WHERE ${where.join(" AND ")}
+       ORDER BY ${col} ${sqlDir}, id ${sqlDir}
+       LIMIT ${arg(limit + 1)}`,
+      args,
+    );
 
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;

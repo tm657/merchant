@@ -1,66 +1,96 @@
+import type { Redis } from "ioredis";
+import { createHash } from "node:crypto";
 import type { Clock } from "./sessions.js";
 
-type Entry = { count: number; windowStart: number; lockedUntil: number };
+type Options = { max: number; windowMs: number; lockoutMs: number };
 
 /**
- * Counts attempts per key in a fixed window. Reaching `max` locks the key for `lockoutMs`.
- * In memory, so limits are per API process (fine for one instance; use Redis for several).
+ * One hit, atomically. Same rules as before the move to Redis:
+ * count attempts in a fixed window; reaching `max` locks the key for `lockoutMs`,
+ * and a fresh window starts when the lockout ends.
+ * Time comes from the app clock (ARGV[1]), not Redis, so tests can control it.
+ * The hash expires once both its window and any lockout are over.
+ */
+const HIT_SCRIPT = `
+local now, max, windowMs, lockoutMs = tonumber(ARGV[1]), tonumber(ARGV[2]), tonumber(ARGV[3]), tonumber(ARGV[4])
+local e = redis.call('HMGET', KEYS[1], 'count', 'windowStart', 'lockedUntil')
+local count, windowStart, lockedUntil = tonumber(e[1]), tonumber(e[2]), tonumber(e[3]) or 0
+if count == nil or now - windowStart >= windowMs then
+  count = 0
+  windowStart = now
+end
+count = count + 1
+if count >= max then
+  lockedUntil = now + lockoutMs
+  count = 0
+  windowStart = lockedUntil
+end
+redis.call('HSET', KEYS[1], 'count', count, 'windowStart', windowStart, 'lockedUntil', lockedUntil)
+redis.call('PEXPIRE', KEYS[1], math.max(1, math.max(windowStart + windowMs, lockedUntil) - now))
+return count
+`;
+
+/** Redis couldn't be reached. Routes turn this into a 503 rather than skipping the limit. */
+export class RateLimiterUnavailableError extends Error {
+  constructor(cause: unknown) {
+    super("rate limiter unavailable", { cause });
+    this.name = "RateLimiterUnavailableError";
+  }
+}
+
+async function orUnavailable<T>(op: Promise<T>): Promise<T> {
+  try {
+    return await op;
+  } catch (err) {
+    throw new RateLimiterUnavailableError(err);
+  }
+}
+
+/**
+ * Counts attempts per key in Redis, so limits hold across every API instance.
+ * Every method rejects with RateLimiterUnavailableError if Redis is down; callers fail closed (503).
  */
 export class AttemptLimiter {
-  private readonly entries = new Map<string, Entry>();
-
   constructor(
-    private readonly opts: { max: number; windowMs: number; lockoutMs: number },
+    private readonly redis: Redis,
+    private readonly name: string,
+    private readonly opts: Options,
     private readonly clock: Clock = Date.now,
+    private readonly prefix = "",
   ) {}
 
+  // Keys can be emails, so only their hash is stored in Redis.
+  private key(key: string): string {
+    return `${this.prefix}rl:${this.name}:${createHash("sha256").update(key, "utf8").digest("hex")}`;
+  }
+
   /** 0 if the key may proceed, otherwise milliseconds until it may. */
-  retryAfterMs(key: string): number {
-    const entry = this.entries.get(key);
-    if (!entry) return 0;
-    return Math.max(0, entry.lockedUntil - this.clock());
+  async retryAfterMs(key: string): Promise<number> {
+    const lockedUntil = Number((await orUnavailable(this.redis.hget(this.key(key), "lockedUntil"))) ?? 0);
+    return Math.max(0, lockedUntil - this.clock());
   }
 
-  hit(key: string): void {
-    const now = this.clock();
-    this.prune(now);
-    let entry = this.entries.get(key);
-    if (!entry || now - entry.windowStart >= this.opts.windowMs) {
-      entry = { count: 0, windowStart: now, lockedUntil: entry?.lockedUntil ?? 0 };
-      this.entries.set(key, entry);
-    }
-    entry.count++;
-    if (entry.count >= this.opts.max) {
-      entry.lockedUntil = now + this.opts.lockoutMs;
-      // A fresh window starts after the lockout.
-      entry.count = 0;
-      entry.windowStart = entry.lockedUntil;
-    }
+  async hit(key: string): Promise<void> {
+    const { max, windowMs, lockoutMs } = this.opts;
+    await orUnavailable(this.redis.eval(HIT_SCRIPT, 1, this.key(key), this.clock(), max, windowMs, lockoutMs));
   }
 
-  reset(key: string): void {
-    this.entries.delete(key);
-  }
-
-  // Keeps memory bounded when many distinct keys show up.
-  private prune(now: number): void {
-    if (this.entries.size < 10_000) return;
-    for (const [key, e] of this.entries) {
-      if (e.lockedUntil <= now && now - e.windowStart >= this.opts.windowMs) this.entries.delete(key);
-    }
+  async reset(key: string): Promise<void> {
+    await orUnavailable(this.redis.del(this.key(key)));
   }
 }
 
 const MINUTE = 60_000;
 
-export function createLimiters(clock: Clock = Date.now) {
+export function createLimiters(redis: Redis, clock: Clock = Date.now, prefix = "") {
+  const limiter = (name: string, opts: Options) => new AttemptLimiter(redis, name, opts, clock, prefix);
   return {
     // Failed logins only. 5 wrong passwords for one email locks it for 5 minutes.
-    loginEmail: new AttemptLimiter({ max: 5, windowMs: 15 * MINUTE, lockoutMs: 5 * MINUTE }, clock),
-    loginIp: new AttemptLimiter({ max: 20, windowMs: 15 * MINUTE, lockoutMs: 5 * MINUTE }, clock),
+    loginEmail: limiter("login-email", { max: 5, windowMs: 15 * MINUTE, lockoutMs: 5 * MINUTE }),
+    loginIp: limiter("login-ip", { max: 20, windowMs: 15 * MINUTE, lockoutMs: 5 * MINUTE }),
     // Every registration attempt counts.
-    registerEmail: new AttemptLimiter({ max: 3, windowMs: 15 * MINUTE, lockoutMs: 15 * MINUTE }, clock),
-    registerIp: new AttemptLimiter({ max: 5, windowMs: 15 * MINUTE, lockoutMs: 15 * MINUTE }, clock),
+    registerEmail: limiter("register-email", { max: 3, windowMs: 15 * MINUTE, lockoutMs: 15 * MINUTE }),
+    registerIp: limiter("register-ip", { max: 5, windowMs: 15 * MINUTE, lockoutMs: 15 * MINUTE }),
   };
 }
 

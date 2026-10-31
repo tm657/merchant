@@ -5,11 +5,12 @@ import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { hashPassword } from "./auth/password.js";
 import { CURRENCIES, type Currency, type Role, type Status } from "@mini-payments/shared";
+import { amountRange } from "./amounts.js";
 import { configSchema, parseEnv } from "./config.js";
-import { openDb } from "./db.js";
+import { createDb, withTransaction } from "./db.js";
 
-// The seed only needs the SQLite path, not Postgres or Redis.
-const { DB_PATH } = parseEnv(configSchema.pick({ DB_PATH: true }));
+// The seed only needs Postgres, not Redis.
+const { DATABASE_URL } = parseEnv(configSchema.pick({ DATABASE_URL: true }));
 
 const ORGS = [
   { id: "org_1", name: "Acme Retail" },
@@ -56,13 +57,6 @@ const MERCHANTS = [
   "Steam", "Microsoft", "100% Pure_Co",
 ];
 
-// Amount ranges in minor units (see CURRENCY_EXPONENT in @mini-payments/shared).
-const AMOUNT_RANGE: Record<Currency, [min: number, max: number]> = {
-  USD: [100, 500_000], // $1 – $5,000
-  IDR: [1_000_000, 2_000_000_000], // Rp10,000 – Rp20,000,000
-  PHP: [5_000, 25_000_000], // ₱50 – ₱250,000
-};
-
 // Small seeded PRNG (mulberry32) so every seed run produces the same data.
 function mulberry32(seed: number) {
   return () => {
@@ -83,7 +77,8 @@ function pickStatus(): Status {
 }
 
 function pickAmount(currency: Currency): number {
-  const [min, max] = AMOUNT_RANGE[currency];
+  // Minor units, scaled by the currency's exponent (IDR is whole rupiah).
+  const [min, max] = amountRange(currency);
   const amount = int(min, max);
   // ~30% are "price point" amounts rounded to 2 significant digits, so equal amounts
   // (ties on the amount sort) are common.
@@ -94,71 +89,90 @@ function pickAmount(currency: Currency): number {
   return amount;
 }
 
-const db = openDb(DB_PATH);
 const now = Date.now();
 // Second precision, so ~3% of rows share a timestamp with the row before (ties on created_at).
 let lastTs = now;
 
-const insertOrg = db.prepare("INSERT INTO orgs (id, name) VALUES (?, ?)");
-const insertTx = db.prepare(
-  `INSERT INTO transactions (id, org_id, merchant, amount, currency, status, created_at)
-   VALUES (?, ?, ?, ?, ?, ?, ?)`,
-);
+// Generate every row first, in the same order as always, so the data is deterministic.
+type TxRow = [id: string, orgId: string, merchant: string, amount: number, currency: Currency, status: Status, createdAt: string];
+const txRows: TxRow[] = [];
+let n = 0;
+for (const org of ORGS) {
+  for (let i = 0; i < TX_PER_ORG; i++) {
+    n++;
+    const ts =
+      rand() < 0.03
+        ? lastTs
+        : Math.floor((now - rand() * DAYS_BACK * 86_400_000) / 1000) * 1000;
+    lastTs = ts;
+    const currency = pick(CURRENCIES);
+    txRows.push([
+      `txn_${n.toString().padStart(6, "0")}`,
+      org.id,
+      pick(MERCHANTS),
+      pickAmount(currency),
+      currency,
+      pickStatus(),
+      new Date(ts).toISOString(),
+    ]);
+  }
+}
 
-db.transaction(() => {
-  db.exec(`DELETE FROM sessions; DELETE FROM memberships; DELETE FROM users;
-           DELETE FROM balances; DELETE FROM transactions; DELETE FROM orgs;`);
+const BATCH = 1000;
+const nowIso = new Date(now).toISOString();
+const db = createDb(DATABASE_URL);
 
-  let n = 0;
-  for (const org of ORGS) {
-    insertOrg.run(org.id, org.name);
-    for (let i = 0; i < TX_PER_ORG; i++) {
-      n++;
-      const ts =
-        rand() < 0.03
-          ? lastTs
-          : Math.floor((now - rand() * DAYS_BACK * 86_400_000) / 1000) * 1000;
-      lastTs = ts;
-      const currency = pick(CURRENCIES);
-      insertTx.run(
-        `txn_${n.toString().padStart(6, "0")}`,
-        org.id,
-        pick(MERCHANTS),
-        pickAmount(currency),
-        currency,
-        pickStatus(),
-        new Date(ts).toISOString(),
+try {
+  await withTransaction(db, async (tx) => {
+    await tx.query("TRUNCATE sessions, memberships, users, balances, transactions, orgs");
+
+    for (const org of ORGS) await tx.query("INSERT INTO orgs (id, name) VALUES ($1, $2)", [org.id, org.name]);
+
+    // One statement per batch: each column goes in as an array and unnest() turns them into rows.
+    for (let i = 0; i < txRows.length; i += BATCH) {
+      const batch = txRows.slice(i, i + BATCH);
+      const column = (c: number) => batch.map((r) => r[c]);
+      await tx.query(
+        `INSERT INTO transactions (id, org_id, merchant, amount, currency, status, created_at)
+         SELECT * FROM unnest($1::text[], $2::text[], $3::text[], $4::bigint[], $5::text[], $6::text[], $7::timestamptz[])`,
+        [column(0), column(1), column(2), column(3), column(4), column(5), column(6)],
       );
     }
-  }
 
-  const insertUser = db.prepare(
-    "INSERT INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)",
-  );
-  const insertMembership = db.prepare("INSERT INTO memberships (user_id, org_id, role) VALUES (?, ?, ?)");
-  USERS.forEach((u, i) => {
-    const id = `usr_${i + 1}`;
-    insertUser.run(id, u.email, u.name, userHashes[i], new Date(now).toISOString());
-    for (const [orgId, role] of u.memberships) insertMembership.run(id, orgId, role);
+    for (const [i, u] of USERS.entries()) {
+      const id = `usr_${i + 1}`;
+      await tx.query("INSERT INTO users (id, email, name, password_hash, created_at) VALUES ($1, $2, $3, $4, $5)", [
+        id,
+        u.email,
+        u.name,
+        userHashes[i],
+        nowIso,
+      ]);
+      for (const [orgId, role] of u.memberships) {
+        await tx.query("INSERT INTO memberships (user_id, org_id, role) VALUES ($1, $2, $3)", [id, orgId, role]);
+      }
+    }
+
+    await tx.query(
+      `INSERT INTO balances (org_id, currency, available, updated_at)
+       SELECT org_id, currency, SUM(amount), $1
+       FROM transactions
+       WHERE status = 'success'
+       GROUP BY org_id, currency`,
+      [nowIso],
+    );
   });
 
-  db.prepare(
-    `INSERT INTO balances (org_id, currency, available, updated_at)
-     SELECT org_id, currency, SUM(amount), ?
-     FROM transactions
-     WHERE status = 'success'
-     GROUP BY org_id, currency`,
-  ).run(new Date(now).toISOString());
-})();
-
-const counts = db
-  .prepare("SELECT org_id, status, COUNT(*) AS n FROM transactions GROUP BY org_id, status")
-  .all();
-console.log(`Seeded ${DB_PATH}`);
-console.table(counts);
-console.table(db.prepare("SELECT org_id, currency, available FROM balances").all());
-console.table(
-  db.prepare("SELECT u.email, m.org_id, m.role FROM users u JOIN memberships m ON m.user_id = u.id ORDER BY u.email").all(),
-);
-console.log(`Passwords: ${PASSWORDS_FILE}`);
-db.close();
+  const counts = await db.query(
+    "SELECT org_id, status, COUNT(*) AS n FROM transactions GROUP BY org_id, status ORDER BY org_id, status",
+  );
+  console.log(`Seeded ${new URL(DATABASE_URL).pathname.slice(1)} on ${new URL(DATABASE_URL).host}`);
+  console.table(counts.rows);
+  console.table((await db.query("SELECT org_id, currency, available FROM balances ORDER BY org_id, currency")).rows);
+  console.table(
+    (await db.query("SELECT u.email, m.org_id, m.role FROM users u JOIN memberships m ON m.user_id = u.id ORDER BY u.email, m.org_id")).rows,
+  );
+  console.log(`Passwords: ${PASSWORDS_FILE}`);
+} finally {
+  await db.end();
+}

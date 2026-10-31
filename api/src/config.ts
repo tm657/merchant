@@ -17,8 +17,6 @@ export const configSchema = z.object({
 
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   REDIS_URL: z.url({ protocol: /^rediss?$/ }),
-  // App data still lives in SQLite until the Postgres data migration lands.
-  DB_PATH: z.string().min(1).default(join(API_ROOT, "data", "payments.db")),
 
   SIMULATOR: flag.default("on"),
   MAX_STREAMS_PER_ORG: z.coerce.number().int().min(1).default(20),

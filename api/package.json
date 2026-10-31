@@ -19,7 +19,6 @@
   "dependencies": {
     "@mini-payments/shared": "*",
     "argon2": "^0.45.1",
-    "better-sqlite3": "^13.0.3",
     "fastify": "^5.12.7",
     "ioredis": "^6.0.0",
     "node-pg-migrate": "^9.0.0",
@@ -28,7 +27,6 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/better-sqlite3": "^9.6.0",
     "@types/node": "^26.6.6",
     "@types/pg": "^8.23.1",
     "eslint": "^10.14.0",

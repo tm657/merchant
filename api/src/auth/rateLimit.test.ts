@@ -1,32 +1,79 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { fakeClock, makeTestApp, PASSWORD } from "../test/helpers.js";
+import { deadRedis, fakeClock, makeTestApp, makeTestRedis, PASSWORD } from "../test/helpers.js";
 import { AttemptLimiter } from "./rateLimit.js";
 
 const MINUTE = 60_000;
 
 describe("AttemptLimiter", () => {
-  it("locks a key after max attempts, then unlocks after the lockout", () => {
+  async function setup() {
     const clock = fakeClock();
-    const limiter = new AttemptLimiter({ max: 3, windowMs: 10 * MINUTE, lockoutMs: 5 * MINUTE }, clock.now);
-    limiter.hit("k");
-    limiter.hit("k");
-    assert.equal(limiter.retryAfterMs("k"), 0);
-    limiter.hit("k");
-    assert.equal(limiter.retryAfterMs("k"), 5 * MINUTE);
-    assert.equal(limiter.retryAfterMs("other"), 0, "keys are independent");
+    const { redis, prefix } = await makeTestRedis();
+    const limiter = new AttemptLimiter(redis, "t", { max: 3, windowMs: 10 * MINUTE, lockoutMs: 5 * MINUTE }, clock.now, prefix);
+    return { clock, redis, prefix, limiter };
+  }
+
+  it("locks a key after max attempts, then unlocks after the lockout", async () => {
+    const { clock, limiter } = await setup();
+    await limiter.hit("k");
+    await limiter.hit("k");
+    assert.equal(await limiter.retryAfterMs("k"), 0);
+    await limiter.hit("k");
+    assert.equal(await limiter.retryAfterMs("k"), 5 * MINUTE);
+    assert.equal(await limiter.retryAfterMs("other"), 0, "keys are independent");
     clock.advance(5 * MINUTE);
-    assert.equal(limiter.retryAfterMs("k"), 0);
+    assert.equal(await limiter.retryAfterMs("k"), 0);
   });
 
-  it("forgets attempts outside the window", () => {
-    const clock = fakeClock();
-    const limiter = new AttemptLimiter({ max: 3, windowMs: 10 * MINUTE, lockoutMs: 5 * MINUTE }, clock.now);
-    limiter.hit("k");
-    limiter.hit("k");
+  it("forgets attempts outside the window", async () => {
+    const { clock, limiter } = await setup();
+    await limiter.hit("k");
+    await limiter.hit("k");
     clock.advance(10 * MINUTE);
-    limiter.hit("k");
-    assert.equal(limiter.retryAfterMs("k"), 0);
+    await limiter.hit("k");
+    assert.equal(await limiter.retryAfterMs("k"), 0);
+  });
+
+  it("reset clears a key", async () => {
+    const { limiter } = await setup();
+    for (let i = 0; i < 3; i++) await limiter.hit("k");
+    await limiter.reset("k");
+    assert.equal(await limiter.retryAfterMs("k"), 0);
+  });
+
+  it("is shared: a lockout set through one connection holds for another", async () => {
+    const { clock, prefix, limiter } = await setup();
+    const other = await makeTestRedis(prefix);
+    const elsewhere = new AttemptLimiter(other.redis, "t", { max: 3, windowMs: 10 * MINUTE, lockoutMs: 5 * MINUTE }, clock.now, prefix);
+    for (let i = 0; i < 3; i++) await limiter.hit("k");
+    assert.equal(await elsewhere.retryAfterMs("k"), 5 * MINUTE);
+  });
+
+  it("stores only a hash of the key, with an expiry", async () => {
+    const { redis, prefix, limiter } = await setup();
+    await limiter.hit("someone@example.com");
+    const keys = await redis.keys(`${prefix}*`);
+    assert.equal(keys.length, 1);
+    assert.doesNotMatch(keys[0]!, /someone/);
+    const ttl = await redis.pttl(keys[0]!);
+    assert.ok(ttl > 0 && ttl <= 10 * MINUTE, `ttl ${ttl}`);
+  });
+});
+
+describe("rate limiter with Redis down", () => {
+  it("login and register fail closed with 503", async () => {
+    const t = await makeTestApp(fakeClock(), { redisClients: deadRedis() });
+    const login = await t.login("admin@test.com", PASSWORD);
+    assert.equal(login.statusCode, 503);
+    assert.deepEqual(login.json(), { error: "service_unavailable" });
+    const register = await t.app.inject({
+      method: "POST",
+      url: "/auth/register",
+      payload: { email: "new@test.com", name: "N", password: "a long enough password" },
+    });
+    assert.equal(register.statusCode, 503);
+    const { rowCount } = await t.db.query("SELECT 1 FROM users WHERE email = 'new@test.com'");
+    assert.equal(rowCount, 0, "nothing was registered");
   });
 });
 

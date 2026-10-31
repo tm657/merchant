@@ -82,6 +82,9 @@ async function toUpstreamError(res: Response): Promise<UpstreamError> {
         : new UpstreamError(502, "upstream_route_not_found");
     case 429:
       return new UpstreamError(429, code ?? "too_many_attempts", res.headers.get("retry-after") ?? undefined);
+    case 503:
+      // e.g. login/register while the API's rate limiter (Redis) is down: fail closed.
+      return new UpstreamError(503, code ?? "service_unavailable", res.headers.get("retry-after") ?? undefined);
     default:
       return new UpstreamError(502, "upstream_error");
   }

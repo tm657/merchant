@@ -1,68 +1,64 @@
-import Database from "better-sqlite3";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import pg from "pg";
 
+export type Db = pg.Pool;
+/** Anything that can run a query: the pool, or a client inside a transaction. */
+export type Queryable = Pick<pg.Pool | pg.PoolClient, "query">;
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS orgs (
-  id   TEXT PRIMARY KEY,
-  name TEXT NOT NULL
-);
+const INT8_OID = 20;
+const TIMESTAMPTZ_OID = 1184;
 
-CREATE TABLE IF NOT EXISTS transactions (
-  id         TEXT PRIMARY KEY,
-  org_id     TEXT NOT NULL REFERENCES orgs(id),
-  merchant   TEXT NOT NULL,
-  amount     INTEGER NOT NULL CHECK (amount >= 0 AND typeof(amount) = 'integer'),
-  currency   TEXT NOT NULL CHECK (currency IN ('USD', 'IDR', 'PHP')),
-  status     TEXT NOT NULL CHECK (status IN ('pending', 'success', 'failed')),
-  created_at TEXT NOT NULL
-);
+/** BIGINT as a JS number. Refuses values a number can't hold exactly, instead of rounding money. */
+export function parseBigint(value: string): number {
+  const n = Number(value);
+  if (!Number.isSafeInteger(n)) throw new RangeError(`BIGINT ${value} is outside the safe integer range`);
+  return n;
+}
 
-CREATE INDEX IF NOT EXISTS idx_tx_org_created ON transactions (org_id, created_at, id);
-CREATE INDEX IF NOT EXISTS idx_tx_org_amount  ON transactions (org_id, amount, id);
+const parseTimestamptz = pg.types.getTypeParser(TIMESTAMPTZ_OID) as (value: string) => Date;
 
-CREATE TABLE IF NOT EXISTS balances (
-  org_id     TEXT NOT NULL REFERENCES orgs(id),
-  currency   TEXT NOT NULL CHECK (currency IN ('USD', 'IDR', 'PHP')),
-  available  INTEGER NOT NULL CHECK (typeof(available) = 'integer'),
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (org_id, currency)
-);
+/** Per-pool type parsers, so nothing global is patched. */
+const types = {
+  getTypeParser: ((oid: number, format?: "text" | "binary") => {
+    if (oid === INT8_OID) return parseBigint;
+    // Always an ISO 8601 UTC string with milliseconds, e.g. 2026-01-01T09:00:00.000Z.
+    if (oid === TIMESTAMPTZ_OID) return (value: string) => parseTimestamptz(value).toISOString();
+    return pg.types.getTypeParser(oid, format);
+  }) as typeof pg.types.getTypeParser,
+};
 
-CREATE TABLE IF NOT EXISTS users (
-  id            TEXT PRIMARY KEY,
-  email         TEXT NOT NULL UNIQUE CHECK (email = lower(email)),
-  name          TEXT NOT NULL,
-  password_hash TEXT NOT NULL,
-  created_at    TEXT NOT NULL
-);
+export type DbOptions = {
+  /** Postgres schema to use instead of public (tests use one per app). */
+  schema?: string;
+  max?: number;
+};
 
-CREATE TABLE IF NOT EXISTS memberships (
-  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  org_id  TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
-  role    TEXT NOT NULL CHECK (role IN ('admin', 'finance', 'support')),
-  PRIMARY KEY (user_id, org_id)
-);
+export function createDb(connectionString: string, { schema, max = 10 }: DbOptions = {}): Db {
+  return new pg.Pool({
+    connectionString,
+    max,
+    connectionTimeoutMillis: 2000,
+    idleTimeoutMillis: 30_000,
+    types,
+    ...(schema ? { options: `-c search_path=${quoteIdent(schema)}` } : {}),
+  });
+}
 
--- Only the SHA-256 of a session token is stored, never the token itself.
-CREATE TABLE IF NOT EXISTS sessions (
-  id           TEXT PRIMARY KEY,
-  user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  token_hash   TEXT NOT NULL UNIQUE,
-  created_at   TEXT NOT NULL,
-  last_seen_at TEXT NOT NULL,
-  expires_at   TEXT NOT NULL,
-  user_agent   TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id);
-`;
+export function quoteIdent(name: string): string {
+  return `"${name.replaceAll('"', '""')}"`;
+}
 
-export function openDb(path: string): Database.Database {
-  mkdirSync(dirname(path), { recursive: true });
-  const db = new Database(path);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
-  db.exec(SCHEMA);
-  return db;
+/** Runs `fn` in a transaction: COMMIT if it resolves, ROLLBACK if it throws. */
+export async function withTransaction<T>(db: Db, fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await fn(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
 }

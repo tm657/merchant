@@ -1,10 +1,10 @@
-import type Database from "better-sqlite3";
 import type { FastifyInstance } from "fastify";
 import type { ServerResponse } from "node:http";
 import type { AuthContext } from "../auth/context.js";
+import type { Db } from "../db.js";
 import { can, REQUEST_ID_HEADER } from "@mini-payments/shared";
 import type { EventBus, OrgEvent } from "../events.js";
-import { badRequest, orgExists, orgParams } from "./common.js";
+import { badRequest, orgExists, orgParams, unavailable } from "./common.js";
 
 const HEARTBEAT_MS = 15_000;
 // A client that stops reading gets dropped instead of growing memory without limit.
@@ -20,7 +20,7 @@ function format(event: OrgEvent): string {
 
 export function eventsRoutes(
   app: FastifyInstance,
-  db: Database.Database,
+  db: Db,
   bus: EventBus,
   auth: AuthContext,
   { maxStreamsPerOrg }: { maxStreamsPerOrg: number },
@@ -34,11 +34,11 @@ export function eventsRoutes(
     done();
   });
 
-  app.get("/orgs/:orgId/events", (req, reply) => {
+  app.get("/orgs/:orgId/events", async (req, reply) => {
     const params = orgParams.safeParse(req.params);
     if (!params.success) return badRequest(reply, params.error);
     const { orgId } = params.data;
-    if (!orgExists(db, orgId)) return reply.code(404).send({ error: "org_not_found" });
+    if (!(await orgExists(db, orgId))) return reply.code(404).send({ error: "org_not_found" });
     const orgAuth = req.orgAuth;
     if (!orgAuth) return reply.code(401).send({ error: "unauthenticated" });
     const canSeeBalances = can(orgAuth.role, "balances:read");
@@ -49,21 +49,11 @@ export function eventsRoutes(
     }
     openPerOrg.set(orgId, open + 1);
 
-    // From here on we write to the raw socket ourselves.
-    reply.hijack();
     const res = reply.raw;
-    openStreams.add(res);
-    res.writeHead(200, {
-      "content-type": "text/event-stream; charset=utf-8",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-      "x-accel-buffering": "no",
-      // Hijacked, so headers set by hooks are not sent; add the request ID by hand.
-      [REQUEST_ID_HEADER]: req.id,
-    });
-    res.write(": connected\n\n");
-
     let done = false;
+    let unsubscribe = () => {};
+    // Started once the stream is open; cleanup can run before that.
+    let heartbeat: NodeJS.Timeout | undefined = undefined;
     const cleanup = () => {
       if (done) return;
       done = true;
@@ -85,21 +75,60 @@ export function eventsRoutes(
       res.write(chunk);
     };
 
-    const unsubscribe = bus.subscribe(orgId, (event) => {
-      if (event.type === "balance" && !canSeeBalances) return;
-      send(format(event));
+    // Subscribe before sending headers: if Redis is down the client gets a clean 503 and
+    // its EventSource retries. Once this resolves, no published event can be missed.
+    try {
+      unsubscribe = await bus.subscribe(orgId, (event) => {
+        if (event.type === "balance" && !canSeeBalances) return;
+        send(format(event));
+      });
+    } catch (err) {
+      cleanup();
+      req.log.error({ err, orgId }, "event bus unavailable");
+      return unavailable(reply);
+    }
+    // The client may have gone away while we waited.
+    if (req.raw.destroyed) {
+      cleanup();
+      return;
+    }
+
+    // From here on we write to the raw socket ourselves.
+    reply.hijack();
+    openStreams.add(res);
+    res.writeHead(200, {
+      "content-type": "text/event-stream; charset=utf-8",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "x-accel-buffering": "no",
+      // Hijacked, so headers set by hooks are not sent; add the request ID by hand.
+      [REQUEST_ID_HEADER]: req.id,
     });
+    res.write(": connected\n\n");
 
     // A stream outlives the request that authorized it, so re-check on every heartbeat:
     // logout, expiry or a removed membership ends the stream within 15 s.
     // touch: false, because an open tab is not user activity for the idle timeout.
-    const heartbeat = setInterval(() => {
-      const session = auth.sessions.validate(orgAuth.token, { touch: false });
-      if (!session || auth.roleIn(session.userId, orgId) !== orgAuth.role) {
-        res.end();
-        return;
-      }
-      send(": heartbeat\n\n");
+    let checking = false;
+    heartbeat = setInterval(() => {
+      if (checking) return;
+      checking = true;
+      void (async () => {
+        try {
+          const session = await auth.sessions.validate(orgAuth.token, { touch: false });
+          if (!session || (await auth.roleIn(session.userId, orgId)) !== orgAuth.role) {
+            res.end();
+            return;
+          }
+          send(": heartbeat\n\n");
+        } catch (err) {
+          // Can't confirm the session is still valid, so don't keep streaming.
+          req.log.warn({ err, orgId }, "session re-check failed, closing stream");
+          res.end();
+        } finally {
+          checking = false;
+        }
+      })();
     }, HEARTBEAT_MS);
 
     // Fires on client disconnect, on res.end() at shutdown, and on destroy().

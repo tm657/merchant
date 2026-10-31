@@ -1,7 +1,15 @@
+import type { Role } from "@mini-payments/shared";
+import type { Redis } from "ioredis";
+import { randomUUID } from "node:crypto";
+import { afterEach } from "node:test";
+import { z } from "zod";
 import { buildApp } from "../app.js";
 import { hashPassword } from "../auth/password.js";
-import type { Role } from "@mini-payments/shared";
-import { openDb } from "../db.js";
+import { parseEnv } from "../config.js";
+import { createDb, quoteIdent, type Db } from "../db.js";
+import type { ReadinessCheck } from "../health.js";
+import { runMigrations } from "../migrate.js";
+import { createRedis, createSubscriber } from "../redis.js";
 
 export const PASSWORD = "correct horse battery staple";
 
@@ -16,35 +24,143 @@ export function fakeClock(start = Date.parse("2026-01-01T09:00:00.000Z")) {
   };
 }
 
+// ---- Where tests run --------------------------------------------------------
+// Tests need the Postgres and Redis from docker-compose (npm run db:up). They use a
+// separate database (payments_test) and Redis db 15, never the dev data.
+
+const env = parseEnv(
+  z.object({
+    DATABASE_URL: z.url().optional(),
+    REDIS_URL: z.url().optional(),
+    TEST_DATABASE_URL: z.url().optional(),
+    TEST_REDIS_URL: z.url().optional(),
+  }),
+);
+
+function withPath(url: string | undefined, path: string): string | undefined {
+  if (!url) return undefined;
+  const u = new URL(url);
+  u.pathname = path;
+  return u.toString();
+}
+
+const TEST_DATABASE_URL = env.TEST_DATABASE_URL ?? withPath(env.DATABASE_URL, "/payments_test");
+const TEST_REDIS_URL = env.TEST_REDIS_URL ?? withPath(env.REDIS_URL, "/15");
+if (!TEST_DATABASE_URL || !TEST_REDIS_URL) {
+  throw new Error("Tests need Postgres and Redis: run `npm run db:up` and create api/.env from api/.env.example.");
+}
+if (env.DATABASE_URL && new URL(TEST_DATABASE_URL).pathname === new URL(env.DATABASE_URL).pathname) {
+  throw new Error("TEST_DATABASE_URL must point at a different database than DATABASE_URL.");
+}
+
+let testDbReady: Promise<void> | undefined;
+
+/** Creates the test database once per process if it doesn't exist. */
+function ensureTestDatabase(): Promise<void> {
+  testDbReady ??= (async () => {
+    const name = new URL(TEST_DATABASE_URL!).pathname.slice(1);
+    const admin = createDb(withPath(TEST_DATABASE_URL, "/postgres")!, { max: 1 });
+    try {
+      const { rowCount } = await admin.query("SELECT 1 FROM pg_database WHERE datname = $1", [name]);
+      if (!rowCount) {
+        await admin.query(`CREATE DATABASE ${quoteIdent(name)}`).catch((err: { code?: string }) => {
+          // Another test file created it at the same moment.
+          if (err.code !== "42P04" && err.code !== "23505") throw err;
+        });
+      }
+    } finally {
+      await admin.end();
+    }
+  })();
+  return testDbReady;
+}
+
+// Everything a test created is torn down after that test.
+const cleanups: (() => Promise<unknown>)[] = [];
+afterEach(async () => {
+  while (cleanups.length > 0) await cleanups.pop()!().catch(() => {});
+});
+
+function waitReady(client: Redis): Promise<void> {
+  if (client.status === "ready") return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    client.once("ready", () => resolve());
+    client.once("end", () => reject(new Error("redis connection ended")));
+  });
+}
+
+/** A fresh, migrated schema of its own in the test database. */
+export async function makeTestDb(): Promise<{ db: Db; schema: string }> {
+  await ensureTestDatabase();
+  const schema = `test_${randomUUID().replaceAll("-", "")}`;
+  await runMigrations({ databaseUrl: TEST_DATABASE_URL!, schema, lock: false });
+  const db = createDb(TEST_DATABASE_URL!, { schema, max: 3 });
+  cleanups.push(async () => {
+    await db.query(`DROP SCHEMA ${quoteIdent(schema)} CASCADE`);
+    await db.end();
+  });
+  return { db, schema };
+}
+
+/** Redis connections plus a key prefix nobody else uses. Keys are deleted afterwards. */
+export async function makeTestRedis(prefix = `test:${randomUUID()}:`) {
+  const redis = createRedis(TEST_REDIS_URL!);
+  const subscriber = createSubscriber(TEST_REDIS_URL!);
+  await Promise.all([waitReady(redis), waitReady(subscriber)]);
+  cleanups.push(async () => {
+    const keys = await redis.keys(`${prefix}*`);
+    if (keys.length > 0) await redis.del(...keys);
+    subscriber.disconnect();
+    redis.disconnect();
+  });
+  return { redis, subscriber, prefix };
+}
+
+/** Redis clients pointed at a port nothing listens on, for "Redis is down" tests. */
+export function deadRedis() {
+  const url = "redis://127.0.0.1:1";
+  const redis = createRedis(url);
+  const subscriber = createSubscriber(url);
+  for (const c of [redis, subscriber]) c.on("error", () => {});
+  cleanups.push(async () => {
+    subscriber.disconnect();
+    redis.disconnect();
+  });
+  return { redis, subscriber };
+}
+
+type TestAppOptions = {
+  /** Reuse another test app's database (two API instances sharing one Postgres). */
+  db?: Db;
+  /** Reuse a Redis prefix (two API instances sharing one Redis). */
+  redisPrefix?: string;
+  /** Use these Redis clients instead of real ones (e.g. deadRedis()). */
+  redisClients?: { redis: Redis; subscriber: Redis };
+  readiness?: Record<string, ReadinessCheck>;
+  logger?: Parameters<typeof buildApp>[0]["logger"];
+};
+
 /**
- * Fresh in-memory database and app. Users:
+ * Fresh database schema, Redis prefix and app. Users:
  *   admin@test (org_1 admin), multi@test (org_1 finance + org_2 admin),
  *   support@test (org_1 support), loner@test (no orgs).
  */
-export async function makeTestApp(clock = fakeClock()) {
-  const db = openDb(":memory:");
-  const hash = await hashPassword(PASSWORD);
-  const now = new Date(clock.now()).toISOString();
+export async function makeTestApp(clock = fakeClock(), opts: TestAppOptions = {}) {
+  const db = opts.db ?? (await seedFixtures((await makeTestDb()).db, clock));
+  const { redis, subscriber, prefix: redisPrefix } = opts.redisClients
+    ? { ...opts.redisClients, prefix: opts.redisPrefix ?? `test:${randomUUID()}:` }
+    : await makeTestRedis(opts.redisPrefix);
 
-  for (const org of ["org_1", "org_2", "org_3"]) db.prepare("INSERT INTO orgs (id, name) VALUES (?, ?)").run(org, org);
-  db.prepare("INSERT INTO balances (org_id, currency, available, updated_at) VALUES ('org_1', 'USD', 1000, ?)").run(now);
-
-  const users: [id: string, email: string, memberships: [string, Role][]][] = [
-    ["u_admin", "admin@test.com", [["org_1", "admin"]]],
-    ["u_multi", "multi@test.com", [["org_1", "finance"], ["org_2", "admin"]]],
-    ["u_support", "support@test.com", [["org_1", "support"]]],
-    ["u_loner", "loner@test.com", []],
-  ];
-  for (const [id, email, memberships] of users) {
-    db.prepare("INSERT INTO users (id, email, name, password_hash, created_at) VALUES (?, ?, ?, ?, ?)").run(
-      id, email, id, hash, now,
-    );
-    for (const [org, role] of memberships) {
-      db.prepare("INSERT INTO memberships (user_id, org_id, role) VALUES (?, ?, ?)").run(id, org, role);
-    }
-  }
-
-  const { app } = buildApp({ db, clock: clock.now });
+  const { app, bus } = buildApp({
+    db,
+    redis,
+    subscriber,
+    clock: clock.now,
+    redisPrefix,
+    readiness: opts.readiness,
+    logger: opts.logger,
+  });
+  cleanups.push(() => app.close());
 
   async function login(email: string, password = PASSWORD, ip = "10.0.0.1") {
     return app.inject({ method: "POST", url: "/auth/login", payload: { email, password }, remoteAddress: ip });
@@ -59,5 +175,32 @@ export async function makeTestApp(clock = fakeClock()) {
   const get = (url: string, token?: string) =>
     app.inject({ method: "GET", url, headers: token ? { authorization: `Bearer ${token}` } : {} });
 
-  return { app, db, clock, login, tokenFor, get };
+  return { app, bus, db, redis, redisPrefix, clock, login, tokenFor, get };
+}
+
+async function seedFixtures(db: Db, clock: ReturnType<typeof fakeClock>): Promise<Db> {
+  const hash = await hashPassword(PASSWORD);
+  const now = new Date(clock.now()).toISOString();
+
+  for (const org of ["org_1", "org_2", "org_3"]) await db.query("INSERT INTO orgs (id, name) VALUES ($1, $1)", [org]);
+  await db.query("INSERT INTO balances (org_id, currency, available, updated_at) VALUES ('org_1', 'USD', 1000, $1)", [now]);
+
+  const users: [id: string, email: string, memberships: [string, Role][]][] = [
+    ["u_admin", "admin@test.com", [["org_1", "admin"]]],
+    ["u_multi", "multi@test.com", [["org_1", "finance"], ["org_2", "admin"]]],
+    ["u_support", "support@test.com", [["org_1", "support"]]],
+    ["u_loner", "loner@test.com", []],
+  ];
+  for (const [id, email, memberships] of users) {
+    await db.query("INSERT INTO users (id, email, name, password_hash, created_at) VALUES ($1, $2, $1, $3, $4)", [
+      id,
+      email,
+      hash,
+      now,
+    ]);
+    for (const [org, role] of memberships) {
+      await db.query("INSERT INTO memberships (user_id, org_id, role) VALUES ($1, $2, $3)", [id, org, role]);
+    }
+  }
+  return db;
 }
