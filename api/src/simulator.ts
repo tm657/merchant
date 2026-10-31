@@ -46,7 +46,7 @@ export function startSimulator(db: Db, bus: EventBus, log: FastifyBaseLogger) {
         tx,
         orgId,
         "transaction.created",
-        { transaction: { id, merchant, amount, currency, status, createdAt: now } },
+        { transaction: { id, type: "payin", merchant, amount, currency, status, createdAt: now, payoutId: null } },
         now,
       );
       if (status !== "success") return null;

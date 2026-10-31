@@ -68,7 +68,7 @@ export function toPayout(r: PayoutRow): Payout {
     accountLast4: r.account_number.slice(-4),
     reference: r.reference,
     createdBy: { id: r.created_by, name: r.created_by_name },
-    decidedBy: r.decided_by ? { id: r.decided_by, name: r.decided_by_name ?? r.decided_by } : null,
+    decidedBy: r.decided_by ? { id: r.decided_by, name: r.decided_by_name ?? "Deleted user" } : null,
     rejectReason: r.reject_reason,
     failureReason: r.failure_reason,
     createdAt: r.created_at,
@@ -356,7 +356,8 @@ export function createPayoutService(db: Db, clock: Clock = Date.now) {
         id: r.id,
         fromStatus: r.from_status,
         toStatus: r.to_status,
-        actor: r.actor_id ? { id: r.actor_id, name: r.actor_name ?? r.actor_id } : null,
+        // Display names only: never an email, and never a raw id if the user is gone.
+        actor: r.actor_id ? { id: r.actor_id, name: r.actor_name ?? "Deleted user" } : null,
         reason: r.reason,
         at: r.created_at,
       }));

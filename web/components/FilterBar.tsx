@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useId, useState } from "react";
-import { CURRENCIES, STATUSES } from "@mini-payments/shared";
+import { CURRENCIES, STATUSES, TRANSACTION_TYPES } from "@mini-payments/shared";
+import { TRANSACTION_TYPE_LABEL } from "@/lib/format";
 import type { Filters } from "@/lib/filters";
 
 export type FilterPatch = Partial<Omit<Filters, "sort" | "dir">>;
@@ -38,7 +39,7 @@ export function FilterBar({ filters, onChange }: Props) {
     return () => clearTimeout(t);
   }, [draft, urlQ, onChange]);
 
-  const hasFilters = Boolean(filters.status || filters.currency || filters.from || filters.to || filters.q);
+  const hasFilters = Boolean(filters.type || filters.status || filters.currency || filters.from || filters.to || filters.q);
 
   return (
     <form
@@ -48,16 +49,33 @@ export function FilterBar({ filters, onChange }: Props) {
       className="flex flex-wrap items-end gap-3"
     >
       <label className={field} htmlFor={`${id}-q`}>
-        Merchant
+        Counterparty
         <input
           id={`${id}-q`}
           type="search"
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder="Search merchant…"
+          placeholder="Merchant or beneficiary…"
           maxLength={100}
           className={`${control} w-56`}
         />
+      </label>
+
+      <label className={field} htmlFor={`${id}-type`}>
+        Type
+        <select
+          id={`${id}-type`}
+          value={filters.type ?? ""}
+          onChange={(e) => onChange({ type: (e.target.value || undefined) as Filters["type"] })}
+          className={control}
+        >
+          <option value="">All</option>
+          {TRANSACTION_TYPES.map((t) => (
+            <option key={t} value={t}>
+              {TRANSACTION_TYPE_LABEL[t]}
+            </option>
+          ))}
+        </select>
       </label>
 
       <label className={field} htmlFor={`${id}-status`}>
@@ -122,7 +140,7 @@ export function FilterBar({ filters, onChange }: Props) {
         <button
           type="button"
           onClick={() =>
-            onChange({ status: undefined, currency: undefined, from: undefined, to: undefined, q: undefined })
+            onChange({ type: undefined, status: undefined, currency: undefined, from: undefined, to: undefined, q: undefined })
           }
           className="h-9 rounded-md px-3 text-sm text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
         >

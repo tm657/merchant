@@ -1,19 +1,21 @@
 "use client";
 
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
+import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { DataTable, type Column, type SortState } from "@/components/DataTable";
 import { FilterBar, type FilterPatch } from "@/components/FilterBar";
 import { useOrgEvents } from "@/components/OrgEvents";
 import { TableSkeleton } from "@/components/TableSkeleton";
-import { formatDateTime, formatMoney } from "@/lib/format";
+import { formatDateTime, formatMoney, TRANSACTION_TYPE_LABEL } from "@/lib/format";
 import { BffError, bffGet } from "@/lib/bff-client";
 import {
   transactionsPageSchema,
   type SortKey,
   type Status,
   type Transaction,
+  type TransactionType,
   type TransactionsPage,
 } from "@mini-payments/shared";
 import { filtersToSearch, pageQuery, parseFilters, type Filters } from "@/lib/filters";
@@ -42,32 +44,59 @@ function errorMessage(err: unknown): string {
   return "Something went wrong while loading transactions.";
 }
 
+const TYPE_STYLES: Record<TransactionType, string> = {
+  payin: "bg-zinc-100 text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300",
+  payout: "bg-sky-50 text-sky-800 dark:bg-sky-950 dark:text-sky-300",
+};
+
 const STATUS_STYLES: Record<Status, string> = {
   success: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
   pending: "bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
   failed: "bg-red-50 text-red-700 dark:bg-red-950 dark:text-red-300",
 };
 
-const COLUMNS: Column<Transaction, SortKey>[] = [
-  { id: "date", header: "Date", sortKey: "createdAt", cell: (t) => formatDateTime(t.createdAt) },
-  { id: "merchant", header: "Merchant", cell: (t) => t.merchant },
-  {
-    id: "status",
-    header: "Status",
-    cell: (t) => (
-      <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[t.status]}`}>
-        {t.status}
-      </span>
-    ),
-  },
-  {
-    id: "amount",
-    header: "Amount",
-    sortKey: "amount",
-    align: "right",
-    cell: (t) => formatMoney(t.amount, t.currency),
-  },
-];
+/** Pay-out entries link to their pay-out, which needs the org. */
+function columnsFor(orgId: string): Column<Transaction, SortKey>[] {
+  return [
+    { id: "date", header: "Date", sortKey: "createdAt", cell: (t) => formatDateTime(t.createdAt) },
+    {
+      id: "type",
+      header: "Type",
+      cell: (t) => (
+        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${TYPE_STYLES[t.type]}`}>{TRANSACTION_TYPE_LABEL[t.type]}</span>
+      ),
+    },
+    {
+      id: "counterparty",
+      header: "Counterparty",
+      cell: (t) =>
+        t.payoutId ? (
+          // A pay-out entry: open the pay-out it books.
+          <Link href={`/orgs/${encodeURIComponent(orgId)}/payouts?payout=${encodeURIComponent(t.payoutId)}`} className="underline-offset-2 hover:underline">
+            {t.merchant}
+          </Link>
+        ) : (
+          t.merchant
+        ),
+    },
+    {
+      id: "status",
+      header: "Status",
+      cell: (t) => (
+        <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${STATUS_STYLES[t.status]}`}>
+          {t.status}
+        </span>
+      ),
+    },
+    {
+      id: "amount",
+      header: "Amount",
+      sortKey: "amount",
+      align: "right",
+      cell: (t) => formatMoney(t.amount, t.currency),
+    },
+  ];
+}
 
 const getRowId = (t: Transaction) => t.id;
 
@@ -92,6 +121,7 @@ export function TransactionsView({ orgId, initialPage, initialFiltersKey }: Prop
   const cursor = stack.at(-1) ?? null;
 
   const queryClient = useQueryClient();
+  const columns = useMemo(() => columnsFor(orgId), [orgId]);
 
   // Seed the cache once with the server-rendered first page. Unlike `initialData`, this
   // can't bring back an old snapshot after the cache entry has been garbage-collected.
@@ -199,7 +229,7 @@ export function TransactionsView({ orgId, initialPage, initialFiltersKey }: Prop
           )}
           <DataTable
             caption="Transactions"
-            columns={COLUMNS}
+            columns={columns}
             rows={page.items}
             sort={{ key: filters.sort, dir: filters.dir }}
             onSortChange={onSortChange}

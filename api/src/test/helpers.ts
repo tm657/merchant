@@ -112,10 +112,16 @@ function waitReady(client: Redis): Promise<void> {
  * A fresh, migrated schema of its own in the test database. `db` is the app role (what
  * the API uses); `owner` is the schema owner, for setup the app may not do.
  */
-export async function makeTestDb(): Promise<{ db: Db; owner: Db; schema: string }> {
+export async function makeTestDb({ migrations }: { migrations?: number } = {}): Promise<{
+  db: Db;
+  owner: Db;
+  schema: string;
+  /** Applies the migrations skipped by `migrations` (for testing a migration's data changes). */
+  migrateRest: () => Promise<void>;
+}> {
   await ensureTestDatabase();
   const schema = `test_${randomUUID().replaceAll("-", "")}`;
-  await runMigrations({ databaseUrl: TEST_DATABASE_URL!, schema, lock: false });
+  await runMigrations({ databaseUrl: TEST_DATABASE_URL!, schema, lock: false, count: migrations });
   const owner = createDb(TEST_DATABASE_URL!, { schema, max: 2 });
   const db = createDb(TEST_APP_URL, { schema, max: 3 });
   cleanups.push(async () => {
@@ -123,8 +129,12 @@ export async function makeTestDb(): Promise<{ db: Db; owner: Db; schema: string 
     await owner.query(`DROP SCHEMA ${quoteIdent(schema)} CASCADE`);
     await owner.end();
   });
-  await assertAppRole(db);
-  return { db, owner, schema };
+  // Before the role migration there is nothing for the app role to be checked against.
+  if (migrations === undefined) await assertAppRole(db);
+  const migrateRest = async () => {
+    await runMigrations({ databaseUrl: TEST_DATABASE_URL!, schema, lock: false });
+  };
+  return { db, owner, schema, migrateRest };
 }
 
 /** Redis connections plus a key prefix nobody else uses. Keys are deleted afterwards. */
@@ -216,16 +226,18 @@ async function seedFixtures(db: Db, clock: ReturnType<typeof fakeClock>): Promis
   for (const org of ["org_1", "org_2", "org_3"]) await db.query("INSERT INTO orgs (id, name) VALUES ($1, $1)", [org]);
   await db.query("INSERT INTO balances (org_id, currency, available, updated_at) VALUES ('org_1', 'USD', 1000, $1)", [now]);
 
-  const users: [id: string, email: string, memberships: [string, Role][]][] = [
-    ["u_admin", "admin@test.com", [["org_1", "admin"]]],
-    ["u_multi", "multi@test.com", [["org_1", "finance"], ["org_2", "admin"]]],
-    ["u_support", "support@test.com", [["org_1", "support"]]],
-    ["u_loner", "loner@test.com", []],
+  // Display names differ from ids and emails, so tests can tell which one is shown.
+  const users: [id: string, email: string, name: string, memberships: [string, Role][]][] = [
+    ["u_admin", "admin@test.com", "Ada Admin", [["org_1", "admin"]]],
+    ["u_multi", "multi@test.com", "Max Multi", [["org_1", "finance"], ["org_2", "admin"]]],
+    ["u_support", "support@test.com", "Sam Support", [["org_1", "support"]]],
+    ["u_loner", "loner@test.com", "Lee Loner", []],
   ];
-  for (const [id, email, memberships] of users) {
-    await db.query("INSERT INTO users (id, email, name, password_hash, created_at) VALUES ($1, $2, $1, $3, $4)", [
+  for (const [id, email, name, memberships] of users) {
+    await db.query("INSERT INTO users (id, email, name, password_hash, created_at) VALUES ($1, $2, $3, $4, $5)", [
       id,
       email,
+      name,
       hash,
       now,
     ]);

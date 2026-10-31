@@ -4,6 +4,7 @@ import type { Clock } from "../auth/sessions.js";
 import { withTransaction, type Db } from "../db.js";
 import { TransientProviderError, type PayoutProvider, type ProviderResult } from "./provider.js";
 import { SYSTEM } from "../audit.js";
+import { enqueueEvent } from "../outbox.js";
 import { enqueueBalance, recordTransition } from "./service.js";
 
 export type Claim = {
@@ -128,8 +129,8 @@ export function createPayoutWorker({
   async function complete(c: Claim, outcome: Outcome): Promise<PayoutStatus | "retry" | "lost"> {
     return withTransaction(db, async (tx) => {
       const now = iso();
-      const { rows } = await tx.query<{ version: number }>(
-        "SELECT version FROM payouts WHERE id = $1 AND status = 'processing' AND attempts = $2 FOR UPDATE",
+      const { rows } = await tx.query<{ version: number; beneficiary_name: string }>(
+        "SELECT version, beneficiary_name FROM payouts WHERE id = $1 AND status = 'processing' AND attempts = $2 FOR UPDATE",
         [c.id, c.attempts],
       );
       if (!rows[0]) {
@@ -176,6 +177,18 @@ export function createPayoutWorker({
         [c.orgId, c.currency, c.amount, paid ? 0 : c.amount, now],
       );
       if (!balance[0]) throw new Error(`no ${c.currency} balance row for ${c.orgId}`);
+
+      // The money has left: book it in the ledger, in this same transaction, so
+      // available + reserved keeps equalling the sum of successful ledger entries.
+      // Failed pay-outs book nothing (their funds went back to available above).
+      if (paid) {
+        await tx.query(
+          `INSERT INTO transactions (id, org_id, type, payout_id, merchant, amount, currency, status, created_at)
+           VALUES ($1, $2, 'payout', $3, $4, $5, $6, 'success', $7)`,
+          [`txn_${c.id}`, c.orgId, c.id, rows[0].beneficiary_name, -c.amount, c.currency, now],
+        );
+        await enqueueEvent(tx, c.orgId, { type: "transactions", count: 1 }, now);
+      }
 
       const to: PayoutStatus = paid ? "paid" : "failed";
       const next = version + 1;

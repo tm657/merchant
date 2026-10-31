@@ -5,16 +5,19 @@ import {
   DIRS,
   SORTS,
   STATUSES,
+  TRANSACTION_TYPES,
   type Currency,
   type SortDir,
   type SortKey,
   type Status,
+  type TransactionType,
 } from "@mini-payments/shared";
 import { z } from "zod";
 
 // Filters and sort live in the URL, so views are shareable and survive reload.
 
 export type Filters = {
+  type?: TransactionType;
   status?: Status;
   currency?: Currency;
   from?: string;
@@ -26,6 +29,7 @@ export type Filters = {
 
 // Lenient: a bad value in a shared URL is dropped instead of breaking the page.
 const lenientFilters = z.object({
+  type: z.enum(TRANSACTION_TYPES).optional().catch(undefined),
   status: z.enum(STATUSES).optional().catch(undefined),
   currency: z.enum(CURRENCIES).optional().catch(undefined),
   from: z.iso.date().optional().catch(undefined),
@@ -50,6 +54,7 @@ function read(params: SearchParamsLike, key: string): string | undefined {
 
 export function parseFilters(params: SearchParamsLike): Filters {
   const f = lenientFilters.parse({
+    type: read(params, "type"),
     status: read(params, "status"),
     currency: read(params, "currency"),
     from: read(params, "from"),
@@ -66,6 +71,7 @@ export function parseFilters(params: SearchParamsLike): Filters {
 /** Only non-default values are written, so URLs stay short and stable. */
 export function filtersToSearch(f: Filters): URLSearchParams {
   const p = new URLSearchParams();
+  if (f.type) p.set("type", f.type);
   if (f.status) p.set("status", f.status);
   if (f.currency) p.set("currency", f.currency);
   if (f.from) p.set("from", f.from);

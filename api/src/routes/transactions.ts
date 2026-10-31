@@ -1,5 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import { apiTransactionsQuerySchema as querySchema, type Currency, type Status } from "@mini-payments/shared";
+import {
+  apiTransactionsQuerySchema as querySchema,
+  type Currency,
+  type Status,
+  type TransactionType,
+} from "@mini-payments/shared";
 import { decodeCursor, encodeCursor, type Sort } from "../cursor.js";
 import type { Db } from "../db.js";
 import { badRequest, orgExists, orgParams } from "./common.js";
@@ -12,11 +17,13 @@ const SORT_COLUMN: Record<Sort, "created_at" | "amount"> = {
 
 type Row = {
   id: string;
+  type: TransactionType;
   merchant: string;
   amount: number;
   currency: Currency;
   status: Status;
   created_at: string;
+  payout_id: string | null;
 };
 
 const nextDay = (date: string) =>
@@ -33,7 +40,7 @@ export function transactionsRoutes(app: FastifyInstance, db: Db) {
 
     const parsed = querySchema.safeParse(req.query);
     if (!parsed.success) return badRequest(reply, parsed.error);
-    const { status, currency, from, to, q, sort, dir, cursor: rawCursor, limit } = parsed.data;
+    const { type, status, currency, from, to, q, sort, dir, cursor: rawCursor, limit } = parsed.data;
 
     const col = SORT_COLUMN[sort];
     const args: (string | number)[] = [];
@@ -41,6 +48,7 @@ export function transactionsRoutes(app: FastifyInstance, db: Db) {
     const arg = (value: string | number) => `$${args.push(value)}`;
     const where: string[] = [`org_id = ${arg(orgId)}`];
 
+    if (type) where.push(`type = ${arg(type)}`);
     if (status) where.push(`status = ${arg(status)}`);
     if (currency) where.push(`currency = ${arg(currency)}`);
     if (from) where.push(`created_at >= ${arg(`${from}T00:00:00.000Z`)}::timestamptz`);
@@ -62,7 +70,7 @@ export function transactionsRoutes(app: FastifyInstance, db: Db) {
 
     const sqlDir = dir === "asc" ? "ASC" : "DESC";
     const { rows } = await db.query<Row>(
-      `SELECT id, merchant, amount, currency, status, created_at
+      `SELECT id, type, merchant, amount, currency, status, created_at, payout_id
        FROM transactions
        WHERE ${where.join(" AND ")}
        ORDER BY ${col} ${sqlDir}, id ${sqlDir}
@@ -85,11 +93,13 @@ export function transactionsRoutes(app: FastifyInstance, db: Db) {
     return {
       items: page.map((r) => ({
         id: r.id,
+        type: r.type,
         merchant: r.merchant,
         amount: r.amount,
         currency: r.currency,
         status: r.status,
         createdAt: r.created_at,
+        payoutId: r.payout_id,
       })),
       nextCursor,
     };

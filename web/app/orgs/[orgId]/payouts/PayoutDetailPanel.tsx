@@ -179,7 +179,8 @@ export function PayoutDetailPanel({ orgId, payoutId, role, currentUserId, onClos
                     {e.fromStatus === e.toStatus ? "Retry scheduled" : PAYOUT_STATUS_LABEL[e.toStatus]}
                     <span className="font-normal text-zinc-500">
                       {" · "}
-                      {e.actor ? (e.actor.id === currentUserId ? "you" : e.actor.name) : "system"}
+                      {/* Always the display name; "(you)" marks your own steps. */}
+                      {e.actor ? `${e.actor.name}${e.actor.id === currentUserId ? " (you)" : ""}` : "System"}
                     </span>
                   </p>
                   <p className="text-xs text-zinc-500">

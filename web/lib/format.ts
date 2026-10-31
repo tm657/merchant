@@ -1,4 +1,6 @@
-import { CURRENCY_EXPONENT, type Currency } from "@mini-payments/shared";
+import { CURRENCY_EXPONENT, type Currency, type TransactionType } from "@mini-payments/shared";
+
+export const TRANSACTION_TYPE_LABEL: Record<TransactionType, string> = { payin: "Pay-in", payout: "Pay-out" };
 
 // Display-only formatting. A fixed locale and UTC keep server and browser output identical,
 // which avoids hydration mismatches.

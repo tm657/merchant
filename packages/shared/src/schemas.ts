@@ -8,6 +8,13 @@ import { ROLES } from "./permissions.ts";
 export const STATUSES = ["pending", "success", "failed"] as const;
 export type Status = (typeof STATUSES)[number];
 
+/**
+ * Transactions are the org's ledger. "payin": money in (amount >= 0). "payout": a paid
+ * pay-out (amount < 0, always status "success", linked to the pay-out).
+ */
+export const TRANSACTION_TYPES = ["payin", "payout"] as const;
+export type TransactionType = (typeof TRANSACTION_TYPES)[number];
+
 export const SORTS = ["createdAt", "amount"] as const;
 export type SortKey = (typeof SORTS)[number];
 
@@ -32,11 +39,15 @@ export const errorBodySchema = z.object({ error: z.string() });
 
 export const transactionSchema = z.object({
   id: z.string(),
+  type: z.enum(TRANSACTION_TYPES),
+  /** The counterparty: the merchant for a pay-in, the beneficiary for a pay-out. */
   merchant: z.string(),
   amount: minorUnitsSchema,
   currency: currencySchema,
   status: z.enum(STATUSES),
   createdAt: z.iso.datetime(),
+  /** Set for type "payout": the pay-out this entry books. */
+  payoutId: z.string().nullable(),
 });
 export type Transaction = z.infer<typeof transactionSchema>;
 
@@ -47,6 +58,7 @@ export const transactionsPageSchema = z.object({
 export type TransactionsPage = z.infer<typeof transactionsPageSchema>;
 
 const transactionsQueryFields = {
+  type: z.enum(TRANSACTION_TYPES).optional(),
   status: z.enum(STATUSES).optional(),
   currency: currencySchema.optional(),
   from: z.iso.date().optional(), // YYYY-MM-DD, inclusive (UTC)

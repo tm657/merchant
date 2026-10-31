@@ -32,6 +32,15 @@ An npm workspaces monorepo. Run `npm install` once at the repo root: there is on
 - **Pay-out state machine** lives in shared (`canTransition`): `pending_approval → approved | rejected | cancelled`, `approved → processing`, `processing → paid | failed`. Never change a pay-out's status without checking it there, and answer a disallowed change with 409 `invalid_transition`.
 - **Pay-out writes** lock the pay-out row (`SELECT … FOR UPDATE`), check `version` (stale → 409 `version_conflict`), check the transition, then bump `version`. In the same transaction they write a `payout_events` row (the timeline) and an outbox row. Lock order is always the pay-out row, then the balance row.
 - **Four eyes**: nobody approves or rejects their own pay-out. Return 403 (`self_approval_forbidden` / `self_rejection_forbidden`); the `payouts_not_self_decided` CHECK constraint is the backstop. UI controls follow `can()` and are never shown on your own pay-outs.
+- **People are shown by display name** (`users.name`), never by email or id. Your own entries get "(you)" appended, worker steps show "System", and a missing user is "Deleted user". The audit log is the exception: it records the email as `actor_label`.
+- **`transactions` is the org's ledger.** `type = 'payin'` is money in (`amount >= 0`). `type = 'payout'` books a paid pay-out (`amount < 0`, `status = 'success'`, `payout_id` set and unique), with the beneficiary in `merchant`. CHECK constraints enforce all of this. Code that means pay-ins only must filter on `type`. `transaction.created` webhooks are pay-ins only, since pay-outs have `payout.paid`.
+- **Ledger invariant**, per (org, currency): `balances.available + balances.reserved = SUM(transactions.amount)` over `status = 'success'`. Every change to a balance commits together with its ledger row, or with none if the money only moved between available and reserved:
+  - successful pay-in: +available, plus a pay-in row;
+  - approval: available → reserved, no row;
+  - paid: −reserved, plus a negative pay-out row;
+  - failed: reserved → available, no row;
+  - rejected or cancelled: nothing.
+  Never compare or sum across currencies. `ledgerMismatches()` (`api/src/ledger.ts`) and `npm run db:check-ledger` check it. Any new money movement needs a test asserting it.
 - **Funds**: approval moves the amount from `balances.available` to `reserved` after locking the balance row and checking funds (409 `insufficient_funds`). Paid releases `reserved`. Failed returns it to `available`. Both columns have `CHECK (>= 0)`.
 - **Outbox, not direct publishing**: state changes that clients must hear about write to `outbox` inside their transaction (`enqueueEvent`); the worker publishes after commit. Delivery is at-least-once, so events carry `version` and clients refetch rather than trusting event payloads blindly. (The transaction simulator still publishes directly; it isn't part of the pay-out flow.)
 - **Idempotent creates**: `POST …/payouts` requires an `Idempotency-Key` header. The key row, the pay-out and the stored response commit in one transaction. Same key + same body (hash of user id and canonical body) replays the stored response with `Idempotent-Replayed: true`; a different body → 422 `idempotency_key_reused`. The web form generates the key when it opens and reuses it for every retry. A new key is only made for a new form. Known keys skip the per-user create rate limit, so retries always work.
@@ -87,6 +96,7 @@ cp api/.env.example api/.env         # once; then set WEBHOOK_SECRET_KEY (openss
 cp web/.env.example web/.env.local   # once
 npm run db:up                        # Postgres + Redis, waits until both are healthy
 npm run db:migrate                   # apply pending migrations and create the app login role
+npm run db:check-ledger              # balances reconcile with the ledger (exit 1 if not)
 npm run db:seed                      # (re)creates the demo data, incl. 3 pending pay-outs in org_1; passwords in api/seed-users.local.json
 
 npm run dev:api        # API on http://localhost:4000 (check http://localhost:4000/readyz)
