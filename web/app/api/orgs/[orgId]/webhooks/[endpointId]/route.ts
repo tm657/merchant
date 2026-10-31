@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { errorResponse, webhooksApi } from "@/lib/api.server";
 import { rejectCrossOrigin } from "@/lib/csrf.server";
-import { invalidRequest } from "@/lib/route-helpers.server";
+import { invalidRequest, readJsonBody } from "@/lib/route-helpers.server";
 import { orgIdSchema, updateWebhookEndpointBodySchema, webhookEndpointIdSchema } from "@mini-payments/shared";
 
 type Ctx = RouteContext<"/api/orgs/[orgId]/webhooks/[endpointId]">;
@@ -30,7 +30,9 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
   if (csrf) return csrf;
   const r = await ids(ctx);
   if ("error" in r) return r.error;
-  const body = updateWebhookEndpointBodySchema.safeParse(await req.json().catch(() => null));
+  const raw = await readJsonBody(req);
+  if (!raw.ok) return raw.response;
+  const body = updateWebhookEndpointBodySchema.safeParse(raw.value);
   if (!body.success) return invalidRequest(body.error);
   try {
     return Response.json(await webhooksApi.update(r.orgId, r.endpointId, body.data));

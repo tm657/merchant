@@ -2,6 +2,7 @@ import { buildApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { assertAppRole, createDb } from "./db.js";
 import { createRedis, createSubscriber } from "./redis.js";
+import { handleShutdown, sleep } from "./shutdown.js";
 import { startSimulator } from "./simulator.js";
 import { parseSecretKey } from "./webhooks/crypto.js";
 
@@ -17,7 +18,10 @@ await assertAppRole(db).catch((err: unknown) => {
 const redis = createRedis(config.REDIS_URL);
 const subscriber = createSubscriber(config.REDIS_URL);
 
+let draining = false;
+
 const { app, bus } = buildApp({
+  draining: () => draining,
   db,
   redis,
   subscriber,
@@ -46,8 +50,8 @@ for (const [name, client] of [["redis", redis], ["redis subscriber", subscriber]
 
 app.addHook("onClose", async () => {
   await db.end();
-  subscriber.disconnect();
-  redis.disconnect();
+  // quit() waits for pending replies; fall back to a hard disconnect if Redis is down.
+  await Promise.all([subscriber.quit().catch(() => subscriber.disconnect()), redis.quit().catch(() => redis.disconnect())]);
 });
 
 if (config.SIMULATOR === "on") {
@@ -56,9 +60,18 @@ if (config.SIMULATOR === "on") {
   app.addHook("preClose", () => simulator.stop());
 }
 
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.once(signal, () => void app.close().then(() => process.exit(0)));
-}
+// 1. /readyz says "draining"; 2. after SHUTDOWN_DRAIN_MS, stop accepting connections and
+// let in-flight requests finish (event streams are ended by their preClose hook);
+// 3. the simulator stops, then Postgres and Redis close (onClose).
+handleShutdown({
+  log: app.log,
+  graceMs: config.SHUTDOWN_GRACE_MS,
+  stop: async () => {
+    draining = true;
+    if (config.SHUTDOWN_DRAIN_MS > 0) await sleep(config.SHUTDOWN_DRAIN_MS);
+    await app.close();
+  },
+});
 
 try {
   await app.listen({ port: config.PORT, host: config.HOST });

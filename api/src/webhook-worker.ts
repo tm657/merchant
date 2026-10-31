@@ -9,6 +9,7 @@ import { parseEnv, webhookWorkerConfigSchema } from "./config.js";
 import { assertAppRole, createDb } from "./db.js";
 import { parseSecretKey } from "./webhooks/crypto.js";
 import { createDeliveryWorker } from "./webhooks/delivery.js";
+import { handleShutdown, sleepUnless } from "./shutdown.js";
 
 const config = parseEnv(webhookWorkerConfigSchema);
 const log = Fastify({ logger: { level: config.LOG_LEVEL } }).log.child({ service: "webhooks" });
@@ -29,29 +30,29 @@ const worker = createDeliveryWorker({
   backoffBaseMs: config.WEBHOOK_BACKOFF_BASE_MS,
 });
 
-let stopping = false;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// Aborted on shutdown: no new claims, idle waits end at once.
+const stop = new AbortController();
 
 const loop = (async () => {
-  while (!stopping) {
+  while (!stop.signal.aborted) {
     let found = 0;
     try {
       found = await worker.runOnce(config.WEBHOOK_BATCH_SIZE);
     } catch (err) {
       log.error({ err }, "webhook step failed");
     }
-    if (found === 0 && !stopping) await sleep(config.WEBHOOK_POLL_MS);
+    if (found === 0) await sleepUnless(config.WEBHOOK_POLL_MS, stop.signal);
   }
 })();
 log.info({ batchSize: config.WEBHOOK_BATCH_SIZE, maxAttempts: WEBHOOK_MAX_ATTEMPTS }, "webhook worker started");
 
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.once(signal, () => {
-    log.info("stopping: finishing in-flight deliveries");
-    stopping = true;
-    // Requests time out after 5 s; anything unfinished is retried when its lease expires.
-    void Promise.race([loop, sleep(7000)])
-      .then(() => db.end())
-      .finally(() => process.exit(0));
-  });
-}
+// Stop claiming and let in-flight deliveries finish (each times out after 5 s), then close.
+handleShutdown({
+  log,
+  graceMs: 10_000,
+  stop: async () => {
+    stop.abort();
+    await loop;
+    await db.end();
+  },
+});

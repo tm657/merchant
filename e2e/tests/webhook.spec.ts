@@ -1,7 +1,6 @@
-import { expect, test } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { RECEIVER_URL, ROOT, stack } from "../stack";
-import { approve, createPayout, login, userPage } from "./support";
+import { approve, createPayout, expect, login, test, userPage } from "./support";
 
 /** The real demo receiver (api/scripts/webhook-receiver.ts), verifying with `secret`. */
 function startReceiver(secret: string) {

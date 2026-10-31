@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { createPayout, errorResponse, fetchPayouts } from "@/lib/api.server";
 import { rejectCrossOrigin } from "@/lib/csrf.server";
-import { invalidRequest } from "@/lib/route-helpers.server";
+import { invalidRequest, readJsonBody } from "@/lib/route-helpers.server";
 import {
   createPayoutBodySchema,
   IDEMPOTENCY_KEY_HEADER,
@@ -35,7 +35,9 @@ export async function POST(req: NextRequest, ctx: RouteContext<"/api/orgs/[orgId
   if (!orgId.success) return invalidRequest(orgId.error);
   const key = idempotencyKeySchema.safeParse(req.headers.get(IDEMPOTENCY_KEY_HEADER));
   if (!key.success) return Response.json({ error: "idempotency_key_required" }, { status: 400 });
-  const body = createPayoutBodySchema.safeParse(await req.json().catch(() => null));
+  const raw = await readJsonBody(req);
+  if (!raw.ok) return raw.response;
+  const body = createPayoutBodySchema.safeParse(raw.value);
   if (!body.success) return invalidRequest(body.error);
 
   try {

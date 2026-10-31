@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { errorResponse, reportsApi } from "@/lib/api.server";
 import { rejectCrossOrigin } from "@/lib/csrf.server";
-import { invalidRequest } from "@/lib/route-helpers.server";
+import { invalidRequest, readJsonBody } from "@/lib/route-helpers.server";
 import { exportFiltersSchema, orgIdSchema } from "@mini-payments/shared";
 
 export async function GET(_req: NextRequest, ctx: RouteContext<"/api/orgs/[orgId]/exports">) {
@@ -20,7 +20,9 @@ export async function POST(req: NextRequest, ctx: RouteContext<"/api/orgs/[orgId
   if (csrf) return csrf;
   const orgId = orgIdSchema.safeParse((await ctx.params).orgId);
   if (!orgId.success) return invalidRequest(orgId.error);
-  const filters = exportFiltersSchema.safeParse(await req.json().catch(() => ({})));
+  const raw = await readJsonBody(req, { fallback: {} });
+  if (!raw.ok) return raw.response;
+  const filters = exportFiltersSchema.safeParse(raw.value);
   if (!filters.success) return invalidRequest(filters.error);
   try {
     return Response.json(await reportsApi.createExport(orgId.data, filters.data), { status: 202 });

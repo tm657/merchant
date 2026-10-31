@@ -27,6 +27,7 @@
     "db:settle": "npm run settle -w api --",
     "test:api": "npm run test -w api",
     "test:web": "npm run test -w web",
-    "test:e2e": "npm run build -w web && npm run e2e:prepare -w api && npm run test -w e2e"
+    "test:e2e": "npm run build -w web && npm run e2e:prepare -w api && npm run test -w e2e",
+    "test:e2e:dev": "npm run e2e:prepare -w api && E2E_WEB=dev npm run test -w e2e -- --grep @csp"
   }
 }

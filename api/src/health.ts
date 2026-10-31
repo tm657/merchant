@@ -18,10 +18,12 @@ function withTimeout(check: ReadinessCheck, ms: number): Promise<unknown> {
  * outage doesn't get the process restarted.
  * /readyz: every dependency answers (readiness). 503 until they all do.
  */
-export function healthRoutes(app: FastifyInstance, checks: Record<string, ReadinessCheck>) {
+export function healthRoutes(app: FastifyInstance, checks: Record<string, ReadinessCheck>, draining: () => boolean = () => false) {
   app.get("/healthz", async () => ({ status: "ok" }));
 
   app.get("/readyz", async (req, reply) => {
+    // Shutting down: tell load balancers to stop sending traffic, before anything closes.
+    if (draining()) return reply.code(503).send({ status: "draining", checks: {} });
     const entries = await Promise.all(
       Object.entries(checks).map(async ([name, check]) => {
         try {

@@ -1,4 +1,5 @@
 import type { NextRequest } from "next/server";
+import { readJsonBody } from "@/lib/route-helpers.server";
 import { apiRegister, errorResponse } from "@/lib/api.server";
 import { rejectCrossOrigin } from "@/lib/csrf.server";
 import { registerBodySchema } from "@mini-payments/shared";
@@ -7,7 +8,11 @@ export async function POST(req: NextRequest) {
   const csrf = rejectCrossOrigin(req);
   if (csrf) return csrf;
 
-  const body = registerBodySchema.safeParse(await req.json().catch(() => null));
+  const raw = await readJsonBody(req);
+
+  if (!raw.ok) return raw.response;
+
+  const body = registerBodySchema.safeParse(raw.value);
   if (!body.success) {
     return Response.json(
       {

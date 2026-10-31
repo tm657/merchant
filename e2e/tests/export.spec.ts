@@ -1,6 +1,5 @@
-import { expect, test } from "@playwright/test";
 import { readFile } from "node:fs/promises";
-import { login } from "./support";
+import { expect, login, test } from "./support";
 
 test("exports the current filters and downloads the CSV", async ({ page }) => {
   await login(page, "bob");

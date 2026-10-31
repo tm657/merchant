@@ -1,5 +1,4 @@
-import { expect, test } from "@playwright/test";
-import { login, userPage } from "./support";
+import { expect, login, test, userPage } from "./support";
 
 test("bob creates a pay-out, alice approves it, and bob sees it paid live over SSE", async ({ page, browser }) => {
   await login(page, "bob");

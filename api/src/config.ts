@@ -26,6 +26,10 @@ export const configSchema = z.object({
   WEBHOOK_SECRET_KEY: z
     .string()
     .refine((v) => Buffer.from(v, "base64").length === 32, "must be 32 bytes, base64 encoded (openssl rand -base64 32)"),
+  // Graceful shutdown: how long /readyz reports "draining" before the server stops
+  // accepting connections (give load balancers time to notice), and the hard limit.
+  SHUTDOWN_DRAIN_MS: z.coerce.number().int().min(0).default(0),
+  SHUTDOWN_GRACE_MS: z.coerce.number().int().min(1000).default(10_000),
   // CSV export files. Gitignored. The API (downloads) and the reports worker must share it.
   EXPORT_DIR: z.string().min(1).default(join(API_ROOT, "var", "exports")),
   // Lets webhooks reach loopback and private addresses, for a local receiver. Never in production.

@@ -1,5 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
-import { API_URL, apiEnv, WEB_URL } from "./stack";
+import { API_URL, apiEnv, WEB_MODE, WEB_URL } from "./stack";
 
 // npm run test:e2e first builds the web app and prepares the e2e database
 // (api/scripts/e2e-prepare.ts); Playwright then starts every process below.
@@ -9,6 +9,7 @@ const env = { ...process.env, ...apiEnv() } as Record<string, string>;
 // them again (prefixed with the server's name). Readiness doesn't depend on this:
 // Playwright reads the workers' "started" line from stdout either way.
 const verbose = process.env.E2E_VERBOSE === "1";
+const suffix = WEB_MODE === "dev" ? "-dev" : "";
 const output = verbose ? ({ stdout: "pipe", stderr: "pipe" } as const) : ({ stdout: "ignore", stderr: "ignore" } as const);
 const worker = (name: string, script: string, ready: RegExp) => ({
   name,
@@ -28,10 +29,12 @@ export default defineConfig({
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 1 : 0,
-  timeout: 60_000,
-  expect: { timeout: 15_000 },
+  timeout: WEB_MODE === "dev" ? 120_000 : 60_000,
+  expect: { timeout: WEB_MODE === "dev" ? 30_000 : 15_000 },
   // Locally: one line per test. CI: annotations plus the HTML report (uploaded as an artifact).
-  reporter: process.env.CI ? [["github"], ["html", { open: "never" }]] : [["line"]],
+  reporter: process.env.CI ? [["github"], ["html", { open: "never", outputFolder: `playwright-report${suffix}` }]] : [["line"]],
+  // The dev-mode run keeps its own results, so a CI job can upload both.
+  outputDir: `test-results${suffix}`,
   use: {
     baseURL: WEB_URL,
     trace: "retain-on-failure",
@@ -54,13 +57,18 @@ export default defineConfig({
     worker("reports worker", "reports", /reports worker started/),
     {
       name: "web",
-      // The production build (npm run build -w web), as users get it.
-      command: `npm run start -w web -- -p ${new URL(WEB_URL).port}`,
+      // The production build (npm run build -w web), as users get it; or `next dev`
+      // with E2E_WEB=dev, to check the development CSP too.
+      command:
+        WEB_MODE === "dev"
+          ? `npm run dev -w web -- -p ${new URL(WEB_URL).port}`
+          : `npm run start -w web -- -p ${new URL(WEB_URL).port}`,
       cwd: "..",
-      env: { ...process.env, API_URL } as Record<string, string>,
+      env: { ...process.env, API_URL, ...(WEB_MODE === "dev" ? { NEXT_DIST_DIR: ".next-e2e-dev" } : {}) } as Record<string, string>,
       url: `${WEB_URL}/login`,
       ...output,
-      timeout: 60_000,
+      // next dev compiles each route on first visit.
+      timeout: WEB_MODE === "dev" ? 120_000 : 60_000,
     },
   ],
 });

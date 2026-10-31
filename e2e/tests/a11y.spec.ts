@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Page } from "@playwright/test";
-import { login } from "./support";
+import type { Page } from "@playwright/test";
+import { expect, login, test } from "./support";
 
 /** Fails on serious or critical axe violations, listing each rule and where it hit. */
 async function expectAccessible(page: Page, what: string) {

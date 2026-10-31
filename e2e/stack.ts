@@ -31,6 +31,9 @@ const withPath = (url: string, path: string, user?: [string, string]) => {
   return u.toString();
 };
 
+/** "prod" (default): the production build. "dev": `next dev` (npm run test:e2e:dev). */
+export const WEB_MODE: "prod" | "dev" = process.env.E2E_WEB === "dev" ? "dev" : "prod";
+
 export const WEB_URL = `http://localhost:${stack.webPort}`;
 export const API_URL = `http://127.0.0.1:${stack.apiPort}`;
 export const RECEIVER_URL = `http://127.0.0.1:${stack.receiverPort}/webhooks`;

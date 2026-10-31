@@ -12,6 +12,7 @@ import { parseEnv, reportsWorkerConfigSchema } from "./config.js";
 import { assertAppRole, createDb } from "./db.js";
 import { createExportWorker } from "./exports/worker.js";
 import { createRedis } from "./redis.js";
+import { closeRedis, handleShutdown, sleepUnless } from "./shutdown.js";
 import { dailyWindow, settle } from "./settlements.js";
 
 const config = parseEnv(reportsWorkerConfigSchema);
@@ -41,20 +42,21 @@ const exportsWorker = createExportWorker({
   leaseMs: config.EXPORT_LEASE_MS,
 });
 
-let stopping = false;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// Aborted on shutdown: no new claims, idle waits end, and running exports stop between
+// pages and go back to the queue (another worker picks them up at once).
+const stop = new AbortController();
 const timers: NodeJS.Timeout[] = [];
 
 const exportLoop = (async () => {
-  while (!stopping) {
+  while (!stop.signal.aborted) {
     let found = 0;
     try {
       // Up to 2 at a time in this process; the per-org limit is enforced in Redis.
-      found = await exportsWorker.runOnce(2);
+      found = await exportsWorker.runOnce(2, stop.signal);
     } catch (err) {
       log.error({ err }, "export step failed");
     }
-    if (found === 0 && !stopping) await sleep(config.EXPORT_POLL_MS);
+    if (found === 0) await sleepUnless(config.EXPORT_POLL_MS, stop.signal);
   }
 })();
 
@@ -69,7 +71,12 @@ async function cleanup() {
 void cleanup();
 timers.push(setInterval(() => void cleanup(), 10 * 60 * 1000));
 
-async function runSettlement() {
+let settling: Promise<void> = Promise.resolve();
+function runSettlement() {
+  settling = settleOnce();
+  return settling;
+}
+async function settleOnce() {
   try {
     const window = await dailyWindow(db);
     if (!window) return log.info("settlements: nothing to settle");
@@ -92,7 +99,7 @@ function scheduleSettlement() {
   timers.push(
     setTimeout(() => {
       void runSettlement().finally(() => {
-        if (!stopping) scheduleSettlement();
+        if (!stop.signal.aborted) scheduleSettlement();
       });
     }, untilNext(config.SETTLEMENT_RUN_AT)),
   );
@@ -101,17 +108,16 @@ void runSettlement();
 scheduleSettlement();
 log.info({ settlementRunAt: `${config.SETTLEMENT_RUN_AT} UTC`, exportDir: config.EXPORT_DIR }, "reports worker started");
 
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.once(signal, () => {
-    log.info("stopping: finishing in-flight exports");
-    stopping = true;
+// Stop claiming; running exports requeue themselves at the next page; a settlement in
+// progress finishes (it's one transaction). Then close.
+handleShutdown({
+  log,
+  graceMs: 15_000,
+  stop: async () => {
+    stop.abort();
     for (const t of timers) clearTimeout(t);
-    // An unfinished export is picked up again when its lease expires.
-    void Promise.race([exportLoop, sleep(15_000)])
-      .then(async () => {
-        await db.end();
-        redis.disconnect();
-      })
-      .finally(() => process.exit(0));
-  });
-}
+    await Promise.all([exportLoop, settling]);
+    await db.end();
+    await closeRedis(redis);
+  },
+});

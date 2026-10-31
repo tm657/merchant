@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // The e2e dev-mode run's build folder (NEXT_DIST_DIR).
+    ".next-e2e-dev/**",
   ]),
 ]);
 

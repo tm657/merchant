@@ -1,5 +1,4 @@
-import { expect, test } from "@playwright/test";
-import { login } from "./support";
+import { expect, login, test } from "./support";
 
 test("a member of another org gets No access, and the API answers 403", async ({ page }) => {
   // Dave belongs to org_3 only.

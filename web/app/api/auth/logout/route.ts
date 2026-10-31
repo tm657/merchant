@@ -1,8 +1,9 @@
 import { cookies } from "next/headers";
 import type { NextRequest } from "next/server";
 import { apiLogout } from "@/lib/api.server";
+import { sessionCookie } from "@/lib/auth.server";
 import { rejectCrossOrigin } from "@/lib/csrf.server";
-import { SESSION_COOKIE } from "@/lib/session-cookie";
+import { log } from "@/lib/log.server";
 
 export async function POST(req: NextRequest) {
   const csrf = rejectCrossOrigin(req);
@@ -12,8 +13,10 @@ export async function POST(req: NextRequest) {
     await apiLogout();
   } catch (err) {
     // Still clear the cookie: the user asked to log out. The session idles out on the API.
-    console.error("API logout failed:", err);
+    await log.error("API logout failed", { err });
   }
-  (await cookies()).delete(SESSION_COOKIE);
+  // Expire it with the attributes it was set with: a __Host- cookie can only be replaced
+  // (and so cleared) by a Set-Cookie that is Secure with Path=/.
+  (await cookies()).set({ ...sessionCookie(req, "", new Date(0).toISOString()), maxAge: 0 });
   return new Response(null, { status: 204 });
 }

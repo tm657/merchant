@@ -1,6 +1,52 @@
-import { expect, type APIRequestContext, type Browser, type Page } from "@playwright/test";
+import { test as base, expect, type APIRequestContext, type Browser, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { PASSWORDS_FILE, WEB_URL } from "../stack";
+
+/**
+ * Collects Content-Security-Policy violations on a page: both the browser's console
+ * report and the securitypolicyviolation event (which also catches blocked styles).
+ */
+function watchCsp(page: Page): string[] {
+  const violations: string[] = [];
+  page.on("console", (msg) => {
+    if (/Content Security Policy/i.test(msg.text())) violations.push(msg.text());
+  });
+  void page.exposeFunction("__reportCspViolation", (v: string) => violations.push(v)).catch(() => {});
+  void page.addInitScript(() => {
+    document.addEventListener("securitypolicyviolation", (e) => {
+      (window as unknown as { __reportCspViolation?: (v: string) => void }).__reportCspViolation?.(
+        `${e.violatedDirective} blocked ${e.blockedURI || "inline"} (${e.sourceFile}:${e.lineNumber})`,
+      );
+    });
+  });
+  return violations;
+}
+
+// Pages opened in extra browser contexts (userPage) are watched too, and checked at the end.
+const extraWatches: { user: string; violations: string[] }[] = [];
+
+/**
+ * Every spec uses this `test`: any CSP violation on any page fails the test. Nothing
+ * else about the tests changes.
+ */
+export const test = base.extend<{ cspGuard: void }>({
+  page: async ({ page }, use) => {
+    const violations = watchCsp(page);
+    await use(page);
+    expect(violations, "Content-Security-Policy violations").toEqual([]);
+  },
+  cspGuard: [
+    // Playwright requires a destructuring pattern here, even an empty one.
+    // eslint-disable-next-line no-empty-pattern
+    async ({}, use) => {
+      extraWatches.length = 0;
+      await use();
+      for (const w of extraWatches) expect(w.violations, `CSP violations (${w.user}'s browser)`).toEqual([]);
+    },
+    { auto: true },
+  ],
+});
+export { expect };
 
 export type User = "alice" | "bob" | "carol" | "dave";
 export const NAMES: Record<User, string> = { alice: "Alice Admin", bob: "Bob Both", carol: "Carol Support", dave: "Dave Finance" };
@@ -25,6 +71,7 @@ export async function login(page: Page, user: User) {
 export async function userPage(browser: Browser, user: User): Promise<Page> {
   const context = await browser.newContext({ baseURL: WEB_URL });
   const page = await context.newPage();
+  extraWatches.push({ user, violations: watchCsp(page) });
   await login(page, user);
   return page;
 }

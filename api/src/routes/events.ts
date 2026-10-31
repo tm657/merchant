@@ -3,6 +3,7 @@ import type { ServerResponse } from "node:http";
 import type { AuthContext } from "../auth/context.js";
 import type { Db } from "../db.js";
 import { can, REQUEST_ID_HEADER } from "@mini-payments/shared";
+import { SECURITY_HEADERS } from "../security.js";
 import type { EventBus, OrgEvent } from "../events.js";
 import { badRequest, orgExists, orgParams, unavailable } from "./common.js";
 
@@ -109,7 +110,8 @@ export function eventsRoutes(
       "cache-control": "no-cache, no-transform",
       connection: "keep-alive",
       "x-accel-buffering": "no",
-      // Hijacked, so headers set by hooks are not sent; add the request ID by hand.
+      // Hijacked, so headers set by hooks are not sent; add them by hand.
+      ...SECURITY_HEADERS,
       [REQUEST_ID_HEADER]: req.id,
     });
     res.write(": connected\n\n");

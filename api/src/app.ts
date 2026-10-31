@@ -8,6 +8,7 @@ import { healthRoutes, type ReadinessCheck } from "./health.js";
 import { createAuditLog } from "./auditLog.js";
 import { createPayoutService } from "./payouts/service.js";
 import { genReqId, requestIdHeader } from "./requestId.js";
+import { BODY_LIMIT_BYTES, errorHandler, securityHeaders } from "./security.js";
 import { authRoutes } from "./routes/auth.js";
 import { balancesRoutes } from "./routes/balances.js";
 import { eventsRoutes } from "./routes/events.js";
@@ -40,6 +41,8 @@ type Options = {
   webhookPolicy: TargetPolicy;
   /** Where the reports worker writes CSV exports (downloads read from here). */
   exportDir: string;
+  /** True once shutdown has begun: /readyz answers 503 "draining". */
+  draining?: () => boolean;
 };
 
 /** Builds the app without listening, so tests can use app.inject(). */
@@ -58,11 +61,14 @@ export function buildApp({
   webhookKey,
   webhookPolicy,
   exportDir,
+  draining,
 }: Options) {
   const app = Fastify({
     logger,
     trustProxy,
     genReqId,
+    // Anything bigger is refused with 413 before it is parsed.
+    bodyLimit: BODY_LIMIT_BYTES,
     logController: new LogController({
       // Logged on every request-scoped line, under the same name the BFF uses.
       requestIdLogLabel: "requestId",
@@ -72,6 +78,8 @@ export function buildApp({
   });
   app.decorateRequest("orgAuth", null);
   requestIdHeader(app);
+  securityHeaders(app);
+  errorHandler(app);
 
   const bus = new EventBus(redis, subscriber, app.log, redisPrefix);
   const auth = createAuthContext(db, redis, clock, redisPrefix);
@@ -88,7 +96,7 @@ export function buildApp({
       if (subscriber.status !== "ready") throw new Error(`redis subscriber is ${subscriber.status}`);
     },
     ...readiness,
-  });
+  }, draining);
   authRoutes(app, auth);
 
   // Every /orgs/:orgId/* route lives in this scope, behind the session + membership check.

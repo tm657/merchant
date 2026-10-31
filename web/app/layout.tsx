@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { connection } from "next/server";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { Providers } from "./providers";
@@ -18,7 +19,14 @@ export const metadata: Metadata = {
   description: "Merchant payments dashboard",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+// The CSP uses a per-request nonce, and Next.js can only add it to pages rendered per
+// request: a prerendered (static or partial) shell would ship scripts without it, and the
+// browser would block them. So the whole app renders per request: the layout waits for the
+// request below, outside any Suspense, and opts out of the static-shell check.
+export const instant = false;
+
+export default async function RootLayout({ children }: LayoutProps<"/">) {
+  await connection();
   return (
     <html
       lang="en"

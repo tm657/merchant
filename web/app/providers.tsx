@@ -1,5 +1,7 @@
 "use client";
 
+// Before anything parses: see the file.
+import "@/lib/zod-config";
 import { QueryCache, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useState, type ReactNode } from "react";
 import { BffError } from "@/lib/bff-client";

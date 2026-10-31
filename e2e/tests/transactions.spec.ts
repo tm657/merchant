@@ -1,5 +1,4 @@
-import { expect, test } from "@playwright/test";
-import { login } from "./support";
+import { expect, login, test } from "./support";
 
 const firstRow = (page: import("@playwright/test").Page) => page.getByRole("table", { name: "Transactions" }).locator("tbody tr").first();
 

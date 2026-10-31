@@ -36,7 +36,8 @@ export function sessionCookie(req: NextRequest, token: string, expiresAt: string
     value: token,
     httpOnly: true,
     sameSite: "lax" as const,
-    secure: getConfig().NODE_ENV === "production" || req.nextUrl.protocol === "https:",
+    // __Host- cookies (production) are only accepted with Secure.
+    secure: SESSION_COOKIE.startsWith("__Host-") || getConfig().NODE_ENV === "production" || req.nextUrl.protocol === "https:",
     path: "/",
     // Matches the session's absolute lifetime. The API still enforces the idle timeout.
     maxAge,

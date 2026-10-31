@@ -83,6 +83,36 @@ An npm workspaces monorepo. Run `npm install` once at the repo root: there is on
   - Settlement totals must always equal the ledger for the same period; a reconciliation test checks this.
   - Recompute by hand with `npm run db:settle -- [from] [to]`.
 - **Audit log CSV exports** neutralise formula prefixes (`= + - @`) and quote per RFC 4180. They are capped (`AUDIT_EXPORT_MAX_ROWS`), audited in the same transaction, and use POST (with the CSRF check), because exporting is an action.
+- **Content-Security-Policy with nonces** is built per request in `web/proxy.ts` (`web/lib/csp.ts`):
+  - Production: `script-src 'self' 'nonce-…' 'strict-dynamic'`, nonce'd styles, `frame-ancestors 'none'`, and no `'unsafe-*'` at all. Development adds only what Next.js needs (`'unsafe-eval'`, inline styles, the hot-reload websocket).
+  - **The whole app renders per request.** The root layout awaits `connection()` and sets `instant = false`, because a prerendered or partial shell can't carry the nonce and its scripts would be blocked. Don't add static or `"use cache"` page shells.
+  - Never add inline `<script>` or `style=` attributes. Never add a library that needs `eval`. Zod runs `jitless` in the web app (`web/lib/zod-config.ts`) so its eval probe doesn't trip the CSP.
+  - e2e fails any page that logs a CSP violation.
+- **Security headers:** `web/next.config.ts` sets `nosniff`, `Referrer-Policy`, `X-Frame-Options`, `Permissions-Policy` and `COOP` on every response, plus HSTS in production, with no `X-Powered-By`. The API sets its own strict set (`api/src/security.ts`), including on the hijacked event stream.
+- **Session cookie:** `__Host-mp_session` in production (Secure, Path=/, no Domain), `mp_session` in development. Clear it with the same attributes (see the logout route): a `__Host-` cookie can't be removed otherwise.
+- **Body limits:**
+  - The API refuses bodies over 16 KB (`BODY_LIMIT_BYTES`, answering 413 `payload_too_large`).
+  - Every BFF route that reads a body uses `readJsonBody` (`web/lib/route-helpers.server.ts`), which enforces the same cap while streaming. Never call `req.json()` directly.
+  - API errors always use `{ error: code }`, and 5xx answers never include internal messages.
+- **No CORS, anywhere.** Nothing sends `Access-Control-*` headers and there's no `OPTIONS` handling. Tests assert it. Don't add a CORS plugin: the browser only ever talks to its own origin (the BFF).
+- **The app's database role is checked at startup.** `assertAppRole` refuses a role that:
+  - is a superuser, or has CREATEROLE, CREATEDB, REPLICATION or BYPASSRLS;
+  - owns the tables or is a member of their owner;
+  - has CREATE on the database or schema, or TEMP;
+  - has TRUNCATE, REFERENCES or TRIGGER on any table, or UPDATE or DELETE on `audit_log`.
+
+  `db:migrate` also revokes CREATE and TEMP on the database from PUBLIC. Migrations and the seed are the only things that run as the owner.
+- **Graceful shutdown:** every process (the API and the three workers) uses `handleShutdown` (`api/src/shutdown.ts`).
+  - The first SIGTERM or SIGINT stops new work, finishes in-flight work, and closes Postgres and Redis (`quit`).
+  - It exits 1 if that outlasts the grace period, or on a second signal.
+  - The API reports `draining` on `/readyz` first (`SHUTDOWN_DRAIN_MS`).
+  - Loops wait with `sleepUnless(…, signal)`, so they stop at once.
+  - An export interrupted by shutdown goes back to `queued` (its attempt isn't counted) and frees its Redis slot.
+  - Any new long-running work must stop on the shutdown signal, or be safe to retry once its lease expires.
+- **Pinned dependencies:**
+  - Every `package.json` uses exact versions, and `.npmrc` has `save-exact=true`, so `npm install x` pins it too.
+  - GitHub Actions are pinned to commit SHAs with the version in a comment.
+  - Dependabot updates both. Never commit a `^` or `~` range.
 - **Local services bind to 127.0.0.1**, including ports in `docker-compose.yml`.
 - **Secrets and data stay out of git**: `.env*` files are gitignored, except `.env.example`, which must never contain real secrets. Seed passwords (`api/seed-users.local.json`) are gitignored too. Never commit them.
 
@@ -95,6 +125,7 @@ Run lint and type-check in each package you touched, and fix every error before 
 npm run lint && npm run typecheck
 npm test                 # API + web unit and integration tests (Vitest)
 npm run test:e2e         # Playwright: builds web, prepares payments_e2e, starts the whole stack
+npm run test:e2e:dev     # the @csp spec against `next dev` (the development CSP)
 
 # or one package
 npm run lint -w web && npm run typecheck -w web   # typecheck runs `next typegen` first, so new routes are typed

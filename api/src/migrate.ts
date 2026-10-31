@@ -60,6 +60,13 @@ export async function ensureAppLogin(ownerUrl: string, appUrl: string): Promise<
     // The group role is created by the first migration that needs it.
     await client.query(`DO $$ BEGIN CREATE ROLE payments_app NOLOGIN; EXCEPTION WHEN duplicate_object OR unique_violation THEN NULL; END $$`);
     await client.query(`GRANT payments_app TO ${quoteIdent(user)}`);
+    // No DDL through the back door: nobody but the owner may create schemas or temp
+    // tables in this database (PUBLIC has TEMP by default). The app still connects.
+    const { rows } = await client.query<{ db: string }>("SELECT current_database() AS db");
+    const db = quoteIdent(rows[0]!.db);
+    await client.query(`REVOKE CREATE, TEMPORARY ON DATABASE ${db} FROM PUBLIC`);
+    await client.query(`GRANT CONNECT ON DATABASE ${db} TO payments_app`);
+    await client.query("REVOKE CREATE ON SCHEMA public FROM PUBLIC");
     return user;
   } finally {
     await client.query("SELECT pg_advisory_unlock(hashtext('mini-payments:roles'))").catch(() => {});

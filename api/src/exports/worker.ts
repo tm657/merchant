@@ -37,6 +37,8 @@ export type ExportClaim = { id: string; orgId: string; attempts: number; filters
 class ExportFailure extends Error {}
 /** Our claim was taken over (lease expired): stop quietly, the new owner carries on. */
 class LostClaim extends Error {}
+/** This worker is shutting down: hand the job back to the queue. */
+class Interrupted extends Error {}
 
 type Options = {
   db: Db;
@@ -143,8 +145,30 @@ export function createExportWorker({
     if (!stream.write(chunk)) await once(stream, "drain");
   }
 
-  /** Streams the job's rows into a CSV file. Never throws: every outcome is recorded on the job. */
-  async function run(c: ExportClaim): Promise<ExportStatus | "lost"> {
+  /**
+   * Puts an interrupted job back in the queue at once, instead of leaving it to its lease:
+   * the attempt doesn't count (a shutdown isn't a failure) and the Redis slot is released
+   * by run()'s finally, so another worker can start it right away.
+   */
+  async function requeue(c: ExportClaim) {
+    await withTransaction(db, async (tx) => {
+      const now = iso();
+      const { rowCount } = await tx.query(
+        `UPDATE export_jobs SET status = 'queued', attempts = attempts - 1, lease_expires_at = NULL,
+                                rows_written = 0, bytes_written = 0, started_at = NULL
+         WHERE id = $1 AND attempts = $2 AND status = 'running'`,
+        [c.id, c.attempts],
+      );
+      if (!rowCount) throw new LostClaim();
+      await enqueueEvent(tx, c.orgId, { type: "export", exportId: c.id, status: "queued", rowsWritten: 0, rowsTotal: null }, now);
+    });
+  }
+
+  /**
+   * Streams the job's rows into a CSV file. Never throws: every outcome is recorded on the
+   * job. When `signal` aborts (shutdown), it stops between pages and requeues the job.
+   */
+  async function run(c: ExportClaim, signal?: AbortSignal): Promise<ExportStatus | "lost"> {
     await mkdir(exportDir, { recursive: true });
     // Random, not derived from anything the user sent.
     const fileName = `${c.id}-${randomBytes(8).toString("hex")}.csv`;
@@ -170,6 +194,7 @@ export function createExportWorker({
 
           let cursor: string | undefined;
           do {
+            if (signal?.aborted) throw new Interrupted();
             const page = await queryTransactionsPage(snap, c.orgId, filters, cursor, pageSize);
             const chunk = page.items.map(transactionCsvLine).join("");
             bytesWritten += Buffer.byteLength(chunk);
@@ -195,6 +220,13 @@ export function createExportWorker({
         log.warn({ exportId: c.id }, "lost the claim on an export, stopping");
         return "lost";
       }
+      if (err instanceof Interrupted) {
+        await requeue(c).catch((e: unknown) => {
+          if (!(e instanceof LostClaim)) throw e;
+        });
+        log.info({ exportId: c.id }, "shutting down: export put back in the queue");
+        return "queued";
+      }
       const message = err instanceof ExportFailure ? err.message : "the export failed unexpectedly";
       if (!(err instanceof ExportFailure)) log.error({ err, exportId: c.id }, "export crashed");
       await finish(c, "failed", { error: message, rowsWritten, bytesWritten, rowsTotal }).catch((e: unknown) => {
@@ -206,11 +238,12 @@ export function createExportWorker({
     }
   }
 
-  async function runOnce(concurrency: number): Promise<number> {
+  async function runOnce(concurrency: number, signal?: AbortSignal): Promise<number> {
+    if (signal?.aborted) return 0;
     const claims = await claim(concurrency);
     await Promise.all(
       claims.map(async (c) => {
-        const outcome = await run(c);
+        const outcome = await run(c, signal);
         log.info({ exportId: c.id, orgId: c.orgId, outcome }, "export finished");
       }),
     );

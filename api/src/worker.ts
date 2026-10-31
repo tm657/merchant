@@ -12,6 +12,7 @@ import { publishOutboxBatch, purgePublishedOutbox } from "./outbox.js";
 import { createSimulatedProvider } from "./payouts/provider.js";
 import { createPayoutWorker } from "./payouts/worker.js";
 import { createRedis } from "./redis.js";
+import { closeRedis, handleShutdown, sleepUnless } from "./shutdown.js";
 
 const config = parseEnv(workerConfigSchema);
 
@@ -47,19 +48,19 @@ const worker = createPayoutWorker({
   }),
 });
 
-let stopping = false;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// Aborted on shutdown: no new claims, idle waits end at once.
+const stop = new AbortController();
 
 /** Runs `step` until stopped: again at once while it finds work, after `idleMs` when it doesn't. */
 async function loop(name: string, idleMs: number, step: () => Promise<number>) {
-  while (!stopping) {
+  while (!stop.signal.aborted) {
     let found = 0;
     try {
       found = await step();
     } catch (err) {
       log.error({ err }, `${name} step failed`);
     }
-    if (found === 0 && !stopping) await sleep(idleMs);
+    if (found === 0) await sleepUnless(idleMs, stop.signal);
   }
 }
 
@@ -83,21 +84,18 @@ const loops = Promise.all([
 ]);
 log.info({ batchSize: config.WORKER_BATCH_SIZE }, "pay-out worker started");
 
-// Long enough for an in-flight provider call (at most half the lease) to finish.
-const SHUTDOWN_GRACE_MS = config.PAYOUT_LEASE_MS / 2 + 1000;
-
-for (const signal of ["SIGINT", "SIGTERM"] as const) {
-  process.once(signal, () => {
-    log.info("stopping: finishing in-flight work");
-    stopping = true;
+// Stop claiming, let in-flight provider calls finish (each is capped at half the lease),
+// publish what they committed, then close. Past the grace period the process exits and
+// an unfinished pay-out is picked up again when its lease expires.
+handleShutdown({
+  log,
+  graceMs: config.PAYOUT_LEASE_MS / 2 + 5000,
+  stop: async () => {
+    stop.abort();
     clearInterval(cleanupTimer);
-    // Anything still unfinished after the grace period is picked up again once its lease expires.
-    void Promise.race([loops, sleep(SHUTDOWN_GRACE_MS)])
-      .then(async () => {
-        await publishOutboxBatch(db, redis, { log }).catch(() => 0);
-        await db.end();
-        redis.disconnect();
-      })
-      .finally(() => process.exit(0));
-  });
-}
+    await loops;
+    await publishOutboxBatch(db, redis, { log }).catch((err: unknown) => log.warn({ err }, "final outbox publish failed"));
+    await db.end();
+    await closeRedis(redis);
+  },
+});

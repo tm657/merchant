@@ -1,7 +1,7 @@
 import type { NextRequest } from "next/server";
 import { decidePayout, errorResponse } from "@/lib/api.server";
 import { rejectCrossOrigin } from "@/lib/csrf.server";
-import { invalidRequest } from "@/lib/route-helpers.server";
+import { invalidRequest, readJsonBody } from "@/lib/route-helpers.server";
 import {
   approvePayoutBodySchema,
   cancelPayoutBodySchema,
@@ -30,7 +30,11 @@ export async function POST(req: NextRequest, ctx: RouteContext<"/api/orgs/[orgId
   if (!orgId.success) return Response.json({ error: "invalid_request" }, { status: 400 });
   if (!payoutId.success || !action.success) return Response.json({ error: "not_found" }, { status: 404 });
 
-  const body = BODY_SCHEMAS[action.data].safeParse(await req.json().catch(() => null));
+  const raw = await readJsonBody(req);
+
+  if (!raw.ok) return raw.response;
+
+  const body = BODY_SCHEMAS[action.data].safeParse(raw.value);
   if (!body.success) return invalidRequest(body.error);
 
   try {

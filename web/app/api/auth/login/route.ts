@@ -1,5 +1,6 @@
 import { cookies } from "next/headers";
 import type { NextRequest } from "next/server";
+import { readJsonBody } from "@/lib/route-helpers.server";
 import { apiLogin, errorResponse } from "@/lib/api.server";
 import { sessionCookie } from "@/lib/auth.server";
 import { rejectCrossOrigin } from "@/lib/csrf.server";
@@ -9,7 +10,11 @@ export async function POST(req: NextRequest) {
   const csrf = rejectCrossOrigin(req);
   if (csrf) return csrf;
 
-  const body = loginBodySchema.safeParse(await req.json().catch(() => null));
+  const raw = await readJsonBody(req);
+
+  if (!raw.ok) return raw.response;
+
+  const body = loginBodySchema.safeParse(raw.value);
   // Same message as a wrong password: the form shouldn't hint at what was wrong.
   if (!body.success) return Response.json({ error: "invalid_credentials" }, { status: 401 });
 
