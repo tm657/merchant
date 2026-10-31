@@ -1,6 +1,20 @@
 import "server-only";
 import { cookies, headers } from "next/headers";
-import type { z } from "zod";
+import { z } from "zod";
+import {
+  auditPageSchema,
+  orgMembersSchema,
+  webhookDeliveriesPageSchema,
+  webhookDeliveryResponseSchema,
+  webhookEndpointListSchema,
+  webhookEndpointResponseSchema,
+  webhookSecretResponseSchema,
+  type AuditFilters,
+  type AuditPage,
+  type CreateWebhookEndpointBody,
+  type OrgMembers,
+  type UpdateWebhookEndpointBody,
+} from "@mini-payments/shared";
 import {
   balancesSchema,
   errorBodySchema,
@@ -33,6 +47,7 @@ export class UpstreamError extends Error {
     readonly status: number,
     readonly code: string,
     readonly retryAfter?: string,
+    readonly detail?: string,
   ) {
     super(code);
     this.name = "UpstreamError";
@@ -74,13 +89,22 @@ async function request(path: string, init: RequestInit & { timeout?: boolean } =
 }
 
 const PASS_THROUGH_403 = new Set(["self_approval_forbidden", "self_rejection_forbidden", "not_creator"]);
+const PASS_THROUGH_404 = new Set([
+  "org_not_found",
+  "payout_not_found",
+  "webhook_endpoint_not_found",
+  "webhook_delivery_not_found",
+]);
 
 /** Maps an upstream error response to the status the BFF returns. */
 async function toUpstreamError(res: Response): Promise<UpstreamError> {
-  const code = errorBodySchema.safeParse(await res.json().catch(() => null)).data?.error;
+  const body: unknown = await res.json().catch(() => null);
+  const code = errorBodySchema.safeParse(body).data?.error;
+  // A human-readable reason the API chose to share (e.g. why a webhook URL is refused).
+  const detail = z.object({ message: z.string().max(300) }).safeParse(body).data?.message;
   switch (res.status) {
     case 400:
-      return new UpstreamError(400, code ?? "invalid_request");
+      return new UpstreamError(400, code ?? "invalid_request", undefined, detail);
     case 401:
       return new UpstreamError(401, code ?? "unauthenticated");
     case 403:
@@ -89,7 +113,7 @@ async function toUpstreamError(res: Response): Promise<UpstreamError> {
     case 404:
       // Only a missing org or pay-out is the caller's 404. Any other 404 (e.g. an API build
       // without this route) is a server problem, so don't pass it off as a clean 404.
-      return code === "org_not_found" || code === "payout_not_found"
+      return code && PASS_THROUGH_404.has(code)
         ? new UpstreamError(404, code)
         : new UpstreamError(502, "upstream_route_not_found");
     case 409:
@@ -169,6 +193,73 @@ export async function createPayout(orgId: string, body: CreatePayoutBody, idempo
   return { status: res.status, replayed: res.headers.get(IDEMPOTENT_REPLAYED_HEADER) === "true", data: res.data };
 }
 
+// ---- Audit log and webhooks (admin) -----------------------------------------------
+
+/** Any method; JSON in, JSON (or nothing, for 204) out, validated against `schema`. */
+async function sendJson<T>(method: string, path: string, body: unknown, schema: z.ZodType<T>): Promise<T> {
+  const res = await request(path, {
+    method,
+    headers: {
+      accept: "application/json",
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
+      ...(await authHeader()),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  if (!res.ok) throw await toUpstreamError(res);
+  const parsed = schema.safeParse(res.status === 204 ? null : await res.json().catch(() => null));
+  if (!parsed.success) {
+    await log.error("api response failed validation", { path, issues: parsed.error.issues.slice(0, 5) });
+    throw new UpstreamError(502, "bad_upstream_response");
+  }
+  return parsed.data;
+}
+
+export function fetchAudit(orgId: string, query: URLSearchParams): Promise<AuditPage> {
+  const qs = query.toString();
+  return getJson(`${orgPath(orgId)}/audit${qs ? `?${qs}` : ""}`, auditPageSchema);
+}
+
+export function fetchMembers(orgId: string): Promise<OrgMembers> {
+  return getJson(`${orgPath(orgId)}/members`, orgMembersSchema);
+}
+
+/** The CSV as the API produced it, with its download headers. */
+export async function exportAudit(orgId: string, filters: AuditFilters): Promise<Response> {
+  const res = await request(`${orgPath(orgId)}/audit/export`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(await authHeader()) },
+    body: JSON.stringify(filters),
+  });
+  if (!res.ok) throw await toUpstreamError(res);
+  const headers = new Headers();
+  for (const h of ["content-type", "content-disposition", "x-export-rows", "x-export-truncated"]) {
+    const v = res.headers.get(h);
+    if (v) headers.set(h, v);
+  }
+  headers.set("cache-control", "no-store");
+  return new Response(res.body, { status: 200, headers });
+}
+
+const webhooksPath = (orgId: string) => `${orgPath(orgId)}/webhooks`;
+const endpointPath = (orgId: string, id: string) => `${webhooksPath(orgId)}/${encodeURIComponent(id)}`;
+
+export const webhooksApi = {
+  list: (orgId: string) => getJson(webhooksPath(orgId), webhookEndpointListSchema),
+  get: (orgId: string, id: string) => getJson(endpointPath(orgId, id), webhookEndpointResponseSchema),
+  create: (orgId: string, body: CreateWebhookEndpointBody) => sendJson("POST", webhooksPath(orgId), body, webhookSecretResponseSchema),
+  update: (orgId: string, id: string, body: UpdateWebhookEndpointBody) =>
+    sendJson("PATCH", endpointPath(orgId, id), body, webhookEndpointResponseSchema),
+  remove: (orgId: string, id: string) => sendJson("DELETE", endpointPath(orgId, id), undefined, z.null()),
+  rotate: (orgId: string, id: string) => sendJson("POST", `${endpointPath(orgId, id)}/rotate`, undefined, webhookSecretResponseSchema),
+  deliveries: (orgId: string, id: string, query: URLSearchParams) => {
+    const qs = query.toString();
+    return getJson(`${endpointPath(orgId, id)}/deliveries${qs ? `?${qs}` : ""}`, webhookDeliveriesPageSchema);
+  },
+  redeliver: (orgId: string, id: string, deliveryId: string) =>
+    sendJson("POST", `${endpointPath(orgId, id)}/deliveries/${encodeURIComponent(deliveryId)}/redeliver`, undefined, webhookDeliveryResponseSchema),
+};
+
 export async function decidePayout(orgId: string, payoutId: string, action: PayoutAction, body: unknown) {
   return (await postJson(`${payoutPath(orgId, payoutId)}/${action}`, body, payoutResponseSchema)).data;
 }
@@ -243,7 +334,7 @@ export async function errorResponse(err: unknown): Promise<Response> {
   if (err instanceof UpstreamError) {
     if (err.status >= 500) await log.warn("upstream error", { status: err.status, code: err.code });
     return Response.json(
-      { error: err.code },
+      { error: err.code, ...(err.detail ? { message: err.detail } : {}) },
       { status: err.status, headers: err.retryAfter ? { "retry-after": err.retryAfter } : {} },
     );
   }

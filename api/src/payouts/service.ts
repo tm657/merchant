@@ -1,5 +1,7 @@
 import {
   canTransition,
+  type AuditAction,
+  type WebhookEventType,
   type CreatePayoutBody,
   type Currency,
   type Payout,
@@ -12,7 +14,8 @@ import { createHash, randomUUID } from "node:crypto";
 import type { Clock } from "../auth/sessions.js";
 import { decodePayoutCursor, encodePayoutCursor } from "../cursor.js";
 import { withTransaction, type Db, type Queryable } from "../db.js";
-import { enqueueEvent } from "../outbox.js";
+import { audit, type AuditContext } from "../audit.js";
+import { enqueueEvent, enqueueWebhookEvent } from "../outbox.js";
 
 /** A refusal with the HTTP status and error code the route should send. */
 export class PayoutError extends Error {
@@ -80,23 +83,63 @@ async function loadPayout(q: Queryable, orgId: string, payoutId: string): Promis
   return toPayout(row);
 }
 
-/** Records a state change in the history and the outbox. Call inside the same transaction. */
+/** A person acting through the API (never the system). */
+export type UserContext = AuditContext & { actorId: string };
+
+/** The audit action and webhook event for arriving in each status. */
+const STATUS_EVENT: Record<PayoutStatus, AuditAction & WebhookEventType> = {
+  pending_approval: "payout.created",
+  approved: "payout.approved",
+  rejected: "payout.rejected",
+  cancelled: "payout.cancelled",
+  processing: "payout.processing",
+  paid: "payout.paid",
+  failed: "payout.failed",
+};
+
+/**
+ * Records a state change: the timeline row, and for real transitions the SSE outbox
+ * event, the audit entry and the webhook event (with a snapshot of the pay-out as it is
+ * now). Call inside the transaction that made the change, after the UPDATE.
+ */
 export async function recordTransition(
   tx: Queryable,
   p: { orgId: string; payoutId: string; from: PayoutStatus | null; to: PayoutStatus; version: number },
-  actorId: string | null,
+  ctx: AuditContext,
   reason: string | null,
   now: string,
 ): Promise<void> {
   await tx.query(
     `INSERT INTO payout_events (payout_id, from_status, to_status, actor_id, reason, created_at)
      VALUES ($1, $2, $3, $4, $5, $6)`,
-    [p.payoutId, p.from, p.to, actorId, reason, now],
+    [p.payoutId, p.from, p.to, ctx.actorId, reason, now],
   );
   // Same-status rows are history only (a retry); they don't change what clients show.
-  if (p.from !== p.to) {
-    await enqueueEvent(tx, p.orgId, { type: "payout", payoutId: p.payoutId, status: p.to, version: p.version }, now);
-  }
+  if (p.from === p.to) return;
+
+  await enqueueEvent(tx, p.orgId, { type: "payout", payoutId: p.payoutId, status: p.to, version: p.version }, now);
+  const payout = await loadPayout(tx, p.orgId, p.payoutId);
+  const event = STATUS_EVENT[p.to];
+  await audit(
+    tx,
+    ctx,
+    {
+      orgId: p.orgId,
+      action: event,
+      targetType: "payout",
+      targetId: p.payoutId,
+      metadata: {
+        from: p.from,
+        to: p.to,
+        version: p.version,
+        amount: payout.amount,
+        currency: payout.currency,
+        ...(reason ? { reason } : {}),
+      },
+    },
+    now,
+  );
+  await enqueueWebhookEvent(tx, p.orgId, event, { payout }, now);
 }
 
 export async function enqueueBalance(
@@ -145,7 +188,8 @@ export function createPayoutService(db: Db, clock: Clock = Date.now) {
      * A concurrent request with the same key blocks on the key's unique index until this
      * commits, then replays the stored response.
      */
-    async create(orgId: string, userId: string, key: string, body: CreatePayoutBody): Promise<CreateResult> {
+    async create(orgId: string, ctx: UserContext, key: string, body: CreatePayoutBody): Promise<CreateResult> {
+      const userId = ctx.actorId;
       // The user is part of the hash: someone else reusing your key gets a 422, not your response.
       const requestHash = createHash("sha256").update(canonical({ userId, body })).digest("hex");
       return withTransaction(db, async (tx) => {
@@ -173,7 +217,7 @@ export function createPayoutService(db: Db, clock: Clock = Date.now) {
            VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending_approval', 1, $8, $9, $9)`,
           [id, orgId, body.amount, body.currency, body.beneficiaryName, body.accountNumber, body.reference, userId, now],
         );
-        await recordTransition(tx, { orgId, payoutId: id, from: null, to: "pending_approval", version: 1 }, userId, null, now);
+        await recordTransition(tx, { orgId, payoutId: id, from: null, to: "pending_approval", version: 1 }, ctx, null, now);
 
         const response = { payout: await loadPayout(tx, orgId, id) };
         await tx.query("UPDATE idempotency_keys SET response_status = 201, response_body = $3 WHERE org_id = $1 AND key = $2", [
@@ -196,7 +240,8 @@ export function createPayoutService(db: Db, clock: Clock = Date.now) {
      * check version and transition, lock the balance row, check funds, and move the
      * amount from available to reserved.
      */
-    async approve(orgId: string, userId: string, payoutId: string, version: number): Promise<Payout> {
+    async approve(orgId: string, ctx: UserContext, payoutId: string, version: number): Promise<Payout> {
+      const userId = ctx.actorId;
       return withTransaction(db, async (tx) => {
         const now = iso();
         const p = await lockPayout(tx, orgId, payoutId);
@@ -222,13 +267,14 @@ export function createPayoutService(db: Db, clock: Clock = Date.now) {
            WHERE org_id = $1 AND id = $2`,
           [orgId, payoutId, next, userId, now],
         );
-        await recordTransition(tx, { orgId, payoutId, from: p.status, to: "approved", version: next }, userId, null, now);
+        await recordTransition(tx, { orgId, payoutId, from: p.status, to: "approved", version: next }, ctx, null, now);
         await enqueueBalance(tx, orgId, { currency: p.currency, ...balance[0]! }, now);
         return loadPayout(tx, orgId, payoutId);
       });
     },
 
-    async reject(orgId: string, userId: string, payoutId: string, version: number, reason: string): Promise<Payout> {
+    async reject(orgId: string, ctx: UserContext, payoutId: string, version: number, reason: string): Promise<Payout> {
+      const userId = ctx.actorId;
       return withTransaction(db, async (tx) => {
         const now = iso();
         const p = await lockPayout(tx, orgId, payoutId);
@@ -241,13 +287,14 @@ export function createPayoutService(db: Db, clock: Clock = Date.now) {
            WHERE org_id = $1 AND id = $2`,
           [orgId, payoutId, next, userId, now, reason],
         );
-        await recordTransition(tx, { orgId, payoutId, from: p.status, to: "rejected", version: next }, userId, reason, now);
+        await recordTransition(tx, { orgId, payoutId, from: p.status, to: "rejected", version: next }, ctx, reason, now);
         return loadPayout(tx, orgId, payoutId);
       });
     },
 
     /** Only the creator, only while pending approval. No funds have moved yet. */
-    async cancel(orgId: string, userId: string, payoutId: string, version: number): Promise<Payout> {
+    async cancel(orgId: string, ctx: UserContext, payoutId: string, version: number): Promise<Payout> {
+      const userId = ctx.actorId;
       return withTransaction(db, async (tx) => {
         const now = iso();
         const p = await lockPayout(tx, orgId, payoutId);
@@ -260,7 +307,7 @@ export function createPayoutService(db: Db, clock: Clock = Date.now) {
           next,
           now,
         ]);
-        await recordTransition(tx, { orgId, payoutId, from: p.status, to: "cancelled", version: next }, userId, null, now);
+        await recordTransition(tx, { orgId, payoutId, from: p.status, to: "cancelled", version: next }, ctx, null, now);
         return loadPayout(tx, orgId, payoutId);
       });
     },

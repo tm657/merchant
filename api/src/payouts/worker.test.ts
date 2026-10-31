@@ -192,7 +192,8 @@ describe("outbox", () => {
     const stream = await openStream(url, await t.tokenFor("support@test.com"));
     try {
       const p = await approvedPayout(t);
-      assert.equal(await publishOutboxBatch(t.db, t.redis, { prefix: t.redisPrefix }), 3);
+      // 2 SSE pay-out events, 1 balance event, 2 webhook events (fanned out, not sent to Redis).
+      assert.equal(await publishOutboxBatch(t.db, t.redis, { prefix: t.redisPrefix }), 5);
       assert.deepEqual(await stream.next("payout"), { payoutId: p.id, status: "pending_approval", version: 1 });
       assert.deepEqual(await stream.next("payout"), { payoutId: p.id, status: "approved", version: 2 });
       // Support can't read balances, so the balance event never reaches them.
@@ -209,7 +210,8 @@ describe("outbox", () => {
     const dead = deadRedis();
     await assert.rejects(publishOutboxBatch(t.db, dead.redis, { prefix: t.redisPrefix }));
     const { rows } = await t.db.query("SELECT 1 FROM outbox WHERE published_at IS NULL");
-    assert.equal(rows.length, 3);
-    assert.equal(await publishOutboxBatch(t.db, t.redis, { prefix: t.redisPrefix }), 3);
+    // 2 SSE pay-out events, 1 balance event, 2 webhook events: all still waiting.
+    assert.equal(rows.length, 5);
+    assert.equal(await publishOutboxBatch(t.db, t.redis, { prefix: t.redisPrefix }), 5);
   });
 });

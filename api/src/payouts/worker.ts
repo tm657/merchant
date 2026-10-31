@@ -3,6 +3,7 @@ import type { FastifyBaseLogger } from "fastify";
 import type { Clock } from "../auth/sessions.js";
 import { withTransaction, type Db } from "../db.js";
 import { TransientProviderError, type PayoutProvider, type ProviderResult } from "./provider.js";
+import { SYSTEM } from "../audit.js";
 import { enqueueBalance, recordTransition } from "./service.js";
 
 export type Claim = {
@@ -89,7 +90,7 @@ export function createPayoutWorker({
           [r.id, attempts, version, iso(clock() + leaseMs), now],
         );
         if (r.status === "approved") {
-          await recordTransition(tx, { orgId: r.org_id, payoutId: r.id, from: "approved", to: "processing", version }, null, null, now);
+          await recordTransition(tx, { orgId: r.org_id, payoutId: r.id, from: "approved", to: "processing", version }, SYSTEM, null, now);
         }
         claims.push({
           id: r.id,
@@ -150,7 +151,7 @@ export function createPayoutWorker({
         await recordTransition(
           tx,
           { ...ref, to: "processing", version },
-          null,
+          SYSTEM,
           `Provider error (${outcome.message}), retry ${c.attempts + 1} of ${maxAttempts} at ${retryAt}`,
           now,
         );
@@ -191,7 +192,7 @@ export function createPayoutWorker({
           now,
         ],
       );
-      await recordTransition(tx, { ...ref, to, version: next }, null, failureReason, now);
+      await recordTransition(tx, { ...ref, to, version: next }, SYSTEM, failureReason, now);
       await enqueueBalance(tx, c.orgId, { currency: c.currency, ...balance[0] }, now);
       return to;
     });

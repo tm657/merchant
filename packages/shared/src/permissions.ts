@@ -9,11 +9,24 @@ export const PERMISSIONS = [
   "payout:create",
   "payout:approve",
   "payout:reject",
+  "audit:read",
+  "audit:export",
+  "webhooks:manage",
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
 const GRANTS: Record<Role, readonly Permission[]> = {
-  admin: ["transactions:read", "balances:read", "payout:read", "payout:create", "payout:approve", "payout:reject"],
+  admin: [
+    "transactions:read",
+    "balances:read",
+    "payout:read",
+    "payout:create",
+    "payout:approve",
+    "payout:reject",
+    "audit:read",
+    "audit:export",
+    "webhooks:manage",
+  ],
   finance: ["transactions:read", "balances:read", "payout:read", "payout:create"],
   support: ["transactions:read", "payout:read"],
 };

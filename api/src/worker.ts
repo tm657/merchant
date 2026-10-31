@@ -7,7 +7,7 @@
  */
 import Fastify from "fastify";
 import { parseEnv, workerConfigSchema } from "./config.js";
-import { createDb } from "./db.js";
+import { assertAppRole, createDb } from "./db.js";
 import { publishOutboxBatch, purgePublishedOutbox } from "./outbox.js";
 import { createSimulatedProvider } from "./payouts/provider.js";
 import { createPayoutWorker } from "./payouts/worker.js";
@@ -21,6 +21,7 @@ const log = Fastify({ logger: { level: config.LOG_LEVEL } }).log.child({ service
 const db = createDb(config.DATABASE_URL);
 const redis = createRedis(config.REDIS_URL);
 db.on("error", (err) => log.error({ err }, "postgres pool error"));
+await assertAppRole(db);
 let redisDown = false;
 redis.on("error", (err) => {
   if (!redisDown) log.warn({ err: err.message }, "redis unavailable, retrying in the background");

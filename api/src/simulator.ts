@@ -3,6 +3,7 @@ import type { FastifyBaseLogger } from "fastify";
 import { randomUUID } from "node:crypto";
 import { amountRange } from "./amounts.js";
 import { withTransaction, type Db } from "./db.js";
+import { enqueueWebhookEvent } from "./outbox.js";
 import type { EventBus } from "./events.js";
 
 const MIN_DELAY_MS = 3000;
@@ -33,10 +34,20 @@ export function startSimulator(db: Db, bus: EventBus, log: FastifyBaseLogger) {
       const status = pickStatus();
       const now = new Date().toISOString();
 
+      const id = `txn_${randomUUID()}`;
+      const merchant = pick(MERCHANTS);
       await tx.query(
         `INSERT INTO transactions (id, org_id, merchant, amount, currency, status, created_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [`txn_${randomUUID()}`, orgId, pick(MERCHANTS), amount, currency, status, now],
+        [id, orgId, merchant, amount, currency, status, now],
+      );
+      // Webhooks go through the outbox; the SSE "transactions" event below stays direct.
+      await enqueueWebhookEvent(
+        tx,
+        orgId,
+        "transaction.created",
+        { transaction: { id, merchant, amount, currency, status, createdAt: now } },
+        now,
       );
       if (status !== "success") return null;
       // Upsert, so an org with no balance row yet for this currency still works.

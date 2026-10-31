@@ -155,7 +155,8 @@ describe("pay-out approval", () => {
     assert.equal(approved.decidedBy?.id, "u_admin");
     assert.deepEqual(await balance(t), { available: 400, reserved: 600 });
     const { rows } = await t.db.query<{ type: string }>("SELECT type FROM outbox ORDER BY id");
-    assert.deepEqual(rows.map((r) => r.type), ["payout", "payout", "balance"]);
+    // Per transition: the SSE event and the webhook event; the approval also moves funds.
+    assert.deepEqual(rows.map((r) => r.type), ["payout", "webhook", "payout", "webhook", "balance"]);
   });
 
   it("returns 409 for insufficient funds and for a currency with no balance", async () => {

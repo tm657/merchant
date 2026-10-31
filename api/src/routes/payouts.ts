@@ -1,7 +1,6 @@
 import {
   apiPayoutsQuerySchema,
   approvePayoutBodySchema,
-  can,
   cancelPayoutBodySchema,
   createPayoutBodySchema,
   IDEMPOTENCY_KEY_HEADER,
@@ -9,7 +8,6 @@ import {
   idempotencyKeySchema,
   payoutIdSchema,
   rejectPayoutBodySchema,
-  type Permission,
 } from "@mini-payments/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
@@ -17,22 +15,9 @@ import type { OrgAuth } from "../auth/context.js";
 import { RateLimiterUnavailableError, type AttemptLimiter } from "../auth/rateLimit.js";
 import { PayoutError, type PayoutService } from "../payouts/service.js";
 import { badRequest, unavailable } from "./common.js";
+import { authorize, userContext } from "./orgAuth.js";
 
 const payoutParams = z.object({ orgId: z.string(), payoutId: payoutIdSchema });
-
-/** The org member, if their role has `permission`; otherwise the reply has been sent. */
-function authorize(req: FastifyRequest, reply: FastifyReply, permission: Permission): OrgAuth | null {
-  // requireOrgMember already ran; this is the per-role check.
-  if (!req.orgAuth) {
-    void reply.code(401).send({ error: "unauthenticated" });
-    return null;
-  }
-  if (!can(req.orgAuth.role, permission)) {
-    void reply.code(403).send({ error: "forbidden" });
-    return null;
-  }
-  return req.orgAuth;
-}
 
 /** Turns service refusals into their status codes; anything else stays a 500. */
 async function handle(req: FastifyRequest, reply: FastifyReply, fn: () => Promise<unknown>) {
@@ -83,7 +68,7 @@ export function payoutsRoutes(app: FastifyInstance, service: PayoutService, crea
           .header("retry-after", String(Math.ceil(wait / 1000)))
           .send({ error: "too_many_requests" });
       }
-      const result = await service.create(auth.orgId, auth.userId, key.data, body.data);
+      const result = await service.create(auth.orgId, userContext(req, auth), key.data, body.data);
       // Replays don't count: retrying a request you already made must stay possible.
       if (!result.replayed) await createLimiter.hit(userKey);
       if (result.replayed) void reply.header(IDEMPOTENT_REPLAYED_HEADER, "true");
@@ -94,9 +79,9 @@ export function payoutsRoutes(app: FastifyInstance, service: PayoutService, crea
   /** POST /orgs/:orgId/payouts/:payoutId/<action>: parse params and body, then decide. */
   function decision<S extends z.ZodType>(
     action: string,
-    permission: Permission,
+    permission: Parameters<typeof authorize>[2],
     schema: S,
-    decide: (auth: OrgAuth, payoutId: string, body: z.infer<S>) => Promise<unknown>,
+    decide: (auth: OrgAuth, ctx: ReturnType<typeof userContext>, payoutId: string, body: z.infer<S>) => Promise<unknown>,
   ) {
     app.post(`/orgs/:orgId/payouts/:payoutId/${action}`, async (req, reply) => {
       const auth = authorize(req, reply, permission);
@@ -105,16 +90,18 @@ export function payoutsRoutes(app: FastifyInstance, service: PayoutService, crea
       if (!params.success) return reply.code(404).send({ error: "payout_not_found" });
       const body = schema.safeParse(req.body);
       if (!body.success) return badRequest(reply, body.error);
-      return handle(req, reply, async () => ({ payout: await decide(auth, params.data.payoutId, body.data) }));
+      return handle(req, reply, async () => ({
+        payout: await decide(auth, userContext(req, auth), params.data.payoutId, body.data),
+      }));
     });
   }
 
-  decision("approve", "payout:approve", approvePayoutBodySchema, (a, id, b) =>
-    service.approve(a.orgId, a.userId, id, b.version),
+  decision("approve", "payout:approve", approvePayoutBodySchema, (a, ctx, id, b) =>
+    service.approve(a.orgId, ctx, id, b.version),
   );
-  decision("reject", "payout:reject", rejectPayoutBodySchema, (a, id, b) =>
-    service.reject(a.orgId, a.userId, id, b.version, b.reason),
+  decision("reject", "payout:reject", rejectPayoutBodySchema, (a, ctx, id, b) =>
+    service.reject(a.orgId, ctx, id, b.version, b.reason),
   );
   // Cancelling is the creator's call; the service checks it's really theirs.
-  decision("cancel", "payout:create", cancelPayoutBodySchema, (a, id, b) => service.cancel(a.orgId, a.userId, id, b.version));
+  decision("cancel", "payout:create", cancelPayoutBodySchema, (a, ctx, id, b) => service.cancel(a.orgId, ctx, id, b.version));
 }

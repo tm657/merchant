@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { withTransaction, type Db } from "../db.js";
+import { withTransaction, type Db, type Queryable } from "../db.js";
 
 export const IDLE_TIMEOUT_MS = 30 * 60_000;
 export const ABSOLUTE_LIFETIME_MS = 8 * 60 * 60_000;
@@ -27,8 +27,16 @@ export function createSessionStore(db: Db, clock: Clock = Date.now) {
   const iso = (ms: number) => new Date(ms).toISOString();
 
   return {
-    /** Returns the raw token. It is never stored, so this is the only time it exists. */
-    create(userId: string, userAgent: string | null, replaceToken: string | null = null) {
+    /**
+     * Returns the raw token. It is never stored, so this is the only time it exists.
+     * `inTransaction` runs in the same transaction (e.g. to write the audit entry).
+     */
+    create(
+      userId: string,
+      userAgent: string | null,
+      replaceToken: string | null = null,
+      inTransaction?: (tx: Queryable, now: string) => Promise<void>,
+    ) {
       return withTransaction(db, async (tx) => {
         const now = clock();
         // Rotation: the browser's previous session (if any) ends when it logs in again.
@@ -48,6 +56,7 @@ export function createSessionStore(db: Db, clock: Clock = Date.now) {
            VALUES ($1, $2, $3, $4, $4, $5, $6)`,
           [randomUUID(), userId, hashToken(token), iso(now), expiresAt, userAgent?.slice(0, 512) ?? null],
         );
+        await inTransaction?.(tx, iso(now));
         return { token, expiresAt };
       });
     },
@@ -78,8 +87,21 @@ export function createSessionStore(db: Db, clock: Clock = Date.now) {
       return { id: row.id, userId: row.user_id, expiresAt: row.expires_at };
     },
 
-    async destroy(token: string | null | undefined): Promise<void> {
-      if (token && TOKEN_FORMAT.test(token)) await db.query("DELETE FROM sessions WHERE token_hash = $1", [hashToken(token)]);
+    /**
+     * Ends the session. `inTransaction` runs in the same transaction, only if a session
+     * was actually deleted, with the user it belonged to.
+     */
+    async destroy(
+      token: string | null | undefined,
+      inTransaction?: (tx: Queryable, userId: string, now: string) => Promise<void>,
+    ): Promise<void> {
+      if (!token || !TOKEN_FORMAT.test(token)) return;
+      await withTransaction(db, async (tx) => {
+        const { rows } = await tx.query<{ user_id: string }>("DELETE FROM sessions WHERE token_hash = $1 RETURNING user_id", [
+          hashToken(token),
+        ]);
+        if (rows[0]) await inTransaction?.(tx, rows[0].user_id, iso(clock()));
+      });
     },
   };
 }

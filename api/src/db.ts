@@ -48,10 +48,14 @@ export function quoteIdent(name: string): string {
 }
 
 /** Runs `fn` in a transaction: COMMIT if it resolves, ROLLBACK if it throws. */
-export async function withTransaction<T>(db: Db, fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+export async function withTransaction<T>(
+  db: Db,
+  fn: (client: pg.PoolClient) => Promise<T>,
+  { isolation }: { isolation?: "REPEATABLE READ" | "SERIALIZABLE" } = {},
+): Promise<T> {
   const client = await db.connect();
   try {
-    await client.query("BEGIN");
+    await client.query(isolation ? `BEGIN ISOLATION LEVEL ${isolation}` : "BEGIN");
     const result = await fn(client);
     await client.query("COMMIT");
     return result;
@@ -60,5 +64,24 @@ export async function withTransaction<T>(db: Db, fn: (client: pg.PoolClient) => 
     throw err;
   } finally {
     client.release();
+  }
+}
+
+/**
+ * Refuses to run as a superuser or as an owner of the app's tables: either would ignore
+ * the privileges that keep audit_log append-only. Call once at startup.
+ */
+export async function assertAppRole(db: Queryable): Promise<void> {
+  const { rows } = await db.query<{ role: string; superuser: boolean; owns: boolean }>(
+    `SELECT current_user AS role,
+            (SELECT rolsuper FROM pg_roles WHERE rolname = current_user) AS superuser,
+            EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = current_schema() AND tableowner = current_user) AS owns`,
+  );
+  const r = rows[0]!;
+  if (r.superuser || r.owns) {
+    throw new Error(
+      `DATABASE_URL connects as "${r.role}", which is ${r.superuser ? "a superuser" : "the owner of the tables"}. ` +
+        "Use the application role instead (see api/.env.example) and run npm run db:migrate to create it.",
+    );
   }
 }

@@ -15,11 +15,34 @@ export const configSchema = z.object({
   // Fastify's trustProxy: who may set X-Forwarded-For. Default: only the BFF on this machine.
   TRUST_PROXY: z.string().min(1).default("loopback"),
 
+  // The application's login role: not a superuser and not the owner of any table.
   DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   REDIS_URL: z.url({ protocol: /^rediss?$/ }),
 
   SIMULATOR: flag.default("on"),
   MAX_STREAMS_PER_ORG: z.coerce.number().int().min(1).default(20),
+
+  // 32 random bytes, base64 (openssl rand -base64 32). Encrypts webhook signing secrets.
+  WEBHOOK_SECRET_KEY: z
+    .string()
+    .refine((v) => Buffer.from(v, "base64").length === 32, "must be 32 bytes, base64 encoded (openssl rand -base64 32)"),
+  // Lets webhooks reach loopback and private addresses, for a local receiver. Never in production.
+  WEBHOOK_ALLOW_PRIVATE_TARGETS: z
+    .enum(["true", "false"])
+    .default("false")
+    .transform((v) => v === "true"),
+});
+
+const noPrivateTargetsInProduction = <T extends { NODE_ENV: string; WEBHOOK_ALLOW_PRIVATE_TARGETS: boolean }>(c: T) =>
+  c.NODE_ENV !== "production" || !c.WEBHOOK_ALLOW_PRIVATE_TARGETS;
+const privateTargetsError = { message: "must be false in production", path: ["WEBHOOK_ALLOW_PRIVATE_TARGETS"] };
+
+/** The API server. */
+export const apiConfigSchema = configSchema.refine(noPrivateTargetsInProduction, privateTargetsError);
+
+/** db:migrate and db:seed: the owner of the schema, plus the app role to create. */
+export const migrationConfigSchema = configSchema.pick({ DATABASE_URL: true }).extend({
+  MIGRATION_DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
 });
 
 export type Config = z.infer<typeof configSchema>;
@@ -78,5 +101,17 @@ export function parseEnv<T extends z.ZodType>(schema: T, env: NodeJS.ProcessEnv 
 
 /** The full API config. Call once at startup. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  return parseEnv(configSchema, env);
+  return parseEnv(apiConfigSchema, env);
 }
+
+/** The webhook delivery worker (npm run webhooks). */
+export const webhookWorkerConfigSchema = configSchema
+  .pick({ NODE_ENV: true, LOG_LEVEL: true, DATABASE_URL: true, WEBHOOK_SECRET_KEY: true, WEBHOOK_ALLOW_PRIVATE_TARGETS: true })
+  .extend({
+    WEBHOOK_BATCH_SIZE: z.coerce.number().int().min(1).max(100).default(10),
+    WEBHOOK_POLL_MS: z.coerce.number().int().min(50).default(1000),
+    WEBHOOK_LEASE_MS: z.coerce.number().int().min(10_000).default(30_000),
+    WEBHOOK_BACKOFF_BASE_MS: z.coerce.number().int().min(100).default(5000),
+  })
+  .refine(noPrivateTargetsInProduction, privateTargetsError);
+export type WebhookWorkerConfig = z.infer<typeof webhookWorkerConfigSchema>;

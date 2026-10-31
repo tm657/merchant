@@ -30,7 +30,7 @@ async function Header({ params }: { params: LayoutProps<"/orgs/[orgId]">["params
         </Link>
         {current && <span className="text-sm font-medium">{current.orgName}</span>}
       </div>
-      {current && <OrgNav orgId={orgId} />}
+      {current && <OrgNav orgId={orgId} role={current.role} />}
       <OrgSwitcher memberships={me.memberships} currentOrgId={orgId} />
       <div className="flex items-center gap-3 text-sm">
         <span className="text-zinc-600 dark:text-zinc-400">

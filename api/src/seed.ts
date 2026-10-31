@@ -6,11 +6,11 @@ import { z } from "zod";
 import { hashPassword } from "./auth/password.js";
 import { CURRENCIES, majorToMinor, type Currency, type Role, type Status } from "@mini-payments/shared";
 import { amountRange } from "./amounts.js";
-import { configSchema, parseEnv } from "./config.js";
+import { migrationConfigSchema, parseEnv } from "./config.js";
 import { createDb, withTransaction } from "./db.js";
 
-// The seed only needs Postgres, not Redis.
-const { DATABASE_URL } = parseEnv(configSchema.pick({ DATABASE_URL: true }));
+// The seed resets tables, so it runs as the owner (MIGRATION_DATABASE_URL), not the app role.
+const { MIGRATION_DATABASE_URL: DATABASE_URL } = parseEnv(migrationConfigSchema.pick({ MIGRATION_DATABASE_URL: true }));
 
 const ORGS = [
   { id: "org_1", name: "Acme Retail" },
@@ -131,7 +131,8 @@ const db = createDb(DATABASE_URL);
 try {
   await withTransaction(db, async (tx) => {
     await tx.query(
-      "TRUNCATE outbox, idempotency_keys, payout_events, payouts, sessions, memberships, users, balances, transactions, orgs",
+      // audit_log is append-only and is never cleared, not even here.
+      "TRUNCATE webhook_deliveries, webhook_endpoints, outbox, idempotency_keys, payout_events, payouts, sessions, memberships, users, balances, transactions, orgs",
     );
 
     for (const org of ORGS) await tx.query("INSERT INTO orgs (id, name) VALUES ($1, $2)", [org.id, org.name]);

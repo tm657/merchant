@@ -44,12 +44,22 @@ export function safeNextPath(next: string | null | undefined): string {
 export type BffResult<T> =
   | { ok: true; status: number; data: T; headers: Headers }
   /** status 0: the request never got an answer (network error), so the outcome is unknown. */
-  | { ok: false; status: number; code: string; retryAfter?: number; issues?: { path: string; message: string }[] };
+  | {
+      ok: false;
+      status: number;
+      code: string;
+      /** A reason the server chose to explain (e.g. why a webhook URL is refused). */
+      message?: string;
+      retryAfter?: number;
+      issues?: { path: string; message: string }[];
+    };
 
+const messageSchema = z.object({ message: z.string() });
 const issuesSchema = z.object({ issues: z.array(z.object({ path: z.string(), message: z.string() })) });
 
-/** POST JSON to a BFF route and validate the answer. Never throws for HTTP or network errors. */
-export async function bffPostJson<T>(
+/** Send JSON to a BFF route and validate the answer. Never throws for HTTP or network errors. */
+export async function bffSend<T>(
+  method: "POST" | "PATCH" | "DELETE",
   url: string,
   payload: unknown,
   schema: z.ZodType<T>,
@@ -58,20 +68,21 @@ export async function bffPostJson<T>(
   let res: Response;
   try {
     res = await fetch(url, {
-      method: "POST",
+      method,
       credentials: "same-origin",
-      headers: { "content-type": "application/json", ...headers },
-      body: JSON.stringify(payload),
+      headers: payload === undefined ? headers : { "content-type": "application/json", ...headers },
+      body: payload === undefined ? undefined : JSON.stringify(payload),
     });
   } catch {
     return { ok: false, status: 0, code: "network" };
   }
-  const body: unknown = await res.json().catch(() => null);
+  const body: unknown = res.status === 204 ? null : await res.json().catch(() => null);
   if (!res.ok) {
     return {
       ok: false,
       status: res.status,
       code: errorBodySchema.safeParse(body).data?.error ?? "unknown_error",
+      message: messageSchema.safeParse(body).data?.message,
       retryAfter: Number(res.headers.get("retry-after")) || undefined,
       issues: issuesSchema.safeParse(body).data?.issues,
     };
@@ -79,4 +90,9 @@ export async function bffPostJson<T>(
   const parsed = schema.safeParse(body);
   if (!parsed.success) return { ok: false, status: res.status, code: "bad_response" };
   return { ok: true, status: res.status, data: parsed.data, headers: res.headers };
+}
+
+/** POST JSON to a BFF route and validate the answer. Never throws for HTTP or network errors. */
+export function bffPostJson<T>(url: string, payload: unknown, schema: z.ZodType<T>, headers: Record<string, string> = {}) {
+  return bffSend("POST", url, payload, schema, headers);
 }

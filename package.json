@@ -18,6 +18,8 @@
     "db:up": "docker compose up -d --wait",
     "db:migrate": "npm run migrate -w api --",
     "db:seed": "npm run seed -w api",
-    "dev:worker": "npm run dev:worker -w api"
+    "dev:worker": "npm run dev:worker -w api",
+    "dev:webhooks": "npm run dev:webhooks -w api",
+    "webhook-receiver": "npm run webhook-receiver -w api"
   }
 }

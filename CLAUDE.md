@@ -11,6 +11,7 @@ An npm workspaces monorepo. Run `npm install` once at the repo root: there is on
 - `api/`: Node 20.12+ TypeScript service using Fastify, pg (Postgres), ioredis (Redis), node-pg-migrate, zod, and tsx. Runs on port **4000**. Several instances can run side by side: everything they share lives in Postgres or Redis.
 - `docker-compose.yml`: Postgres 16 and Redis 7 for local development, bound to 127.0.0.1.
 - **Postgres** holds all app data, including sessions. **Redis** holds rate-limit counters and carries live events (pub/sub) between API instances.
+- **Webhook worker** (`api/src/webhook-worker.ts`, `npm run dev:webhooks`): a separate process that delivers webhooks. Deliveries are created by the outbox publisher in the pay-out worker, so both must run. `api/scripts/webhook-receiver.ts` (`npm run webhook-receiver`) is a local receiver that verifies signatures, for demos.
 - **Pay-out worker** (`api/src/worker.ts`, `npm run dev:worker`): a separate process that sends approved pay-outs to the simulated provider, publishes the outbox to Redis, and deletes old idempotency keys and outbox rows. Without it, pay-outs stay `approved` and no live pay-out or balance events reach the browser for pay-out changes. Any number of workers can run at once.
 - `web/` uses a newer Next.js with breaking changes. Read `web/AGENTS.md` and the docs in `web/node_modules/next/dist/docs/` before writing Next.js code.
 
@@ -41,6 +42,20 @@ An npm workspaces monorepo. Run `npm install` once at the repo root: there is on
 - **Migrations**: every Postgres schema change is a new SQL file in `api/migrations/`, created with `npm run migrate:create -w api -- <name>`, and applied with `npm run db:migrate`. It needs both `-- Up Migration` and `-- Down Migration` sections. Never edit a migration that has already been applied: add a new one instead.
 - **Request IDs**: the web proxy (`web/proxy.ts`) gives every request a fresh `x-request-id`, and the BFF forwards it to the API. The API reuses it if it is well formed, or generates one. Both apps echo it in the response. Every log line must carry it: use `req.log` in the API (never `app.log` or `console` inside a request) and `log` from `web/lib/log.server.ts` in the BFF (never `console`).
 - **Health**: `/healthz` (liveness) must never touch dependencies. `/readyz` checks every dependency (Postgres, and Redis including the pub/sub connection) and returns 503 if any is down. When adding a dependency, add a readiness check for it in `buildApp` (`app.ts`). Responses show only ok/error per check: details go to the logs.
+- **Database roles**: the API and workers connect with `DATABASE_URL` as a login role in `payments_app`: never a superuser, never the owner of the tables (`assertAppRole` refuses to start otherwise). Migrations and the seed use `MIGRATION_DATABASE_URL` (the owner). `db:migrate` creates or updates the login role from `DATABASE_URL`. Default privileges give new tables SELECT/INSERT/UPDATE/DELETE to `payments_app`. A table that must be more restricted needs an explicit `REVOKE` in its migration, as `audit_log` has.
+- **Audit log**: every security-relevant action writes exactly one entry with `audit(tx, ctx, …)`, using the action's own transaction, so the entry exists if and only if the action committed. This covers login, logout, pay-out transitions, webhook changes and exports. Add new actions to `AUDIT_ACTIONS` in shared. Build the context with `requestContext(req, userId)` (IP, user agent, request id), or use `SYSTEM` in workers. Metadata never holds passwords, tokens, secrets, full account numbers or full webhook URLs (hosts only).
+- **The audit log is append-only**: the app role has no UPDATE, DELETE or TRUNCATE on it, and triggers refuse them for everyone. There are no foreign keys, so entries outlive deleted users and orgs. Never "fix" an entry: write a new one. `db:seed` never clears it.
+- **Webhook events** are enqueued with `enqueueWebhookEvent(tx, …)` in the transaction that caused them. The payload is a snapshot of the object at that moment (integer minor units, masked account numbers). The outbox publisher fans them out to `webhook_deliveries`, idempotent per (endpoint, event). A new event type goes in `WEBHOOK_EVENT_TYPES` in shared.
+- **Outbound HTTP to user-supplied URLs goes only through `sendWebhook`** (`api/src/webhooks/http.ts`). It enforces the SSRF rules:
+  - HTTPS only in production, and no credentials in URLs.
+  - DNS is resolved and every address checked, and the connection pins the vetted address.
+  - Private, loopback, link-local, reserved and IPv4-in-IPv6 addresses are blocked.
+  - No redirects, a 5 s timeout and a 64 KB response cap.
+  - URLs are validated with `validateWebhookTarget` when saved, and checked again on every delivery.
+  - `WEBHOOK_ALLOW_PRIVATE_TARGETS=true` allows only loopback and private ranges, for the local demo. Config refuses it in production. Link-local (cloud metadata) is never allowed.
+- **Webhook secrets** are encrypted with AES-256-GCM using `WEBHOOK_SECRET_KEY`, with the endpoint id as AAD. They're returned only by create and rotate (the UI shows them once), and are never logged, audited or cached. Rotation keeps the old secret co-signing for 24 h (a second `v1=`). Requests are signed `Webhook-Signature: t=<unix>,v1=<HMAC-SHA256(secret, t + "." + body)>`, and receivers should dedupe on `Webhook-Id`.
+- **Webhook deliveries** use the same pattern as pay-outs: claim with `FOR UPDATE SKIP LOCKED` under a lease, make the HTTP call outside any transaction, and use `attempts` as the fencing token. Backoff is exponential (5 s base), and a delivery is marked `dead` after `WEBHOOK_MAX_ATTEMPTS` (8). Redelivery is a new row with the same body and event id.
+- **CSV exports** neutralise formula prefixes (`= + - @`) and quote per RFC 4180. They are capped (`AUDIT_EXPORT_MAX_ROWS`), audited in the same transaction, and use POST (with the CSRF check), because exporting is an action.
 - **Local services bind to 127.0.0.1**, including ports in `docker-compose.yml`.
 - **Secrets and data stay out of git**: `.env*` files are gitignored, except `.env.example`, which must never contain real secrets. Seed passwords (`api/seed-users.local.json`) are gitignored too. Never commit them.
 
@@ -60,7 +75,7 @@ npm run lint -w @mini-payments/shared && npm run typecheck -w @mini-payments/sha
 
 A change to `packages/shared` affects both apps, so type-check all three.
 
-API tests need the docker-compose services running (`npm run db:up`). They never touch dev data: each test app migrates its own throwaway schema in the `payments_test` database and uses its own key prefix in Redis db 15, and all of it is removed afterwards. Override with `TEST_DATABASE_URL` / `TEST_REDIS_URL`. Test behaviour against real Postgres and Redis, not mocks.
+API tests need the docker-compose services running (`npm run db:up`) and `MIGRATION_DATABASE_URL` in `api/.env`. They never touch dev data: each test app migrates its own throwaway schema in the `payments_test` database as the owner, connects as its own app login role (`payments_app_test`, so privileges are tested for real) and uses its own key prefix in Redis db 15, and all of it is removed afterwards. Override with `TEST_DATABASE_URL` / `TEST_REDIS_URL`. Test behaviour against real Postgres and Redis, not mocks.
 
 Then tell the user the exact commands to run the change and what they should see (e.g. which URL to open, expected output or UI state).
 
@@ -68,15 +83,19 @@ Then tell the user the exact commands to run the change and what they should see
 
 ```bash
 npm install                          # once, at the repo root
-cp api/.env.example api/.env         # once
+cp api/.env.example api/.env         # once; then set WEBHOOK_SECRET_KEY (openssl rand -base64 32)
 cp web/.env.example web/.env.local   # once
 npm run db:up                        # Postgres + Redis, waits until both are healthy
-npm run db:migrate                   # apply pending migrations
+npm run db:migrate                   # apply pending migrations and create the app login role
 npm run db:seed                      # (re)creates the demo data, incl. 3 pending pay-outs in org_1; passwords in api/seed-users.local.json
 
-npm run dev:api      # API on http://localhost:4000 (check http://localhost:4000/readyz)
-npm run dev:worker   # pay-out worker + outbox publisher (no port)
-npm run dev:web      # web on http://localhost:3000
+npm run dev:api        # API on http://localhost:4000 (check http://localhost:4000/readyz)
+npm run dev:worker     # pay-out worker + outbox publisher (no port)
+npm run dev:webhooks   # webhook delivery worker (no port)
+npm run dev:web        # web on http://localhost:3000
+
+# optional, for webhook demos: point an endpoint at http://127.0.0.1:4500/webhooks
+WEBHOOK_SECRET=whsec_... npm run webhook-receiver
 ```
 
 Roll back the last migration with `npm run db:migrate -- down`. `npm run db:seed` truncates every table first.

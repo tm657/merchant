@@ -1,14 +1,14 @@
 import type { Role } from "@mini-payments/shared";
 import type { Redis } from "ioredis";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { afterEach } from "node:test";
 import { z } from "zod";
 import { buildApp } from "../app.js";
 import { hashPassword } from "../auth/password.js";
 import { parseEnv } from "../config.js";
-import { createDb, quoteIdent, type Db } from "../db.js";
+import { assertAppRole, createDb, quoteIdent, type Db } from "../db.js";
 import type { ReadinessCheck } from "../health.js";
-import { runMigrations } from "../migrate.js";
+import { ensureAppLogin, runMigrations } from "../migrate.js";
 import { createRedis, createSubscriber } from "../redis.js";
 
 export const PASSWORD = "correct horse battery staple";
@@ -31,7 +31,9 @@ export function fakeClock(start = Date.parse("2026-01-01T09:00:00.000Z")) {
 const env = parseEnv(
   z.object({
     DATABASE_URL: z.url().optional(),
+    MIGRATION_DATABASE_URL: z.url().optional(),
     REDIS_URL: z.url().optional(),
+    /** The schema owner in the test database (migrations, cleanup). */
     TEST_DATABASE_URL: z.url().optional(),
     TEST_REDIS_URL: z.url().optional(),
   }),
@@ -44,14 +46,30 @@ function withPath(url: string | undefined, path: string): string | undefined {
   return u.toString();
 }
 
-const TEST_DATABASE_URL = env.TEST_DATABASE_URL ?? withPath(env.DATABASE_URL, "/payments_test");
+const TEST_DATABASE_URL = env.TEST_DATABASE_URL ?? withPath(env.MIGRATION_DATABASE_URL, "/payments_test");
 const TEST_REDIS_URL = env.TEST_REDIS_URL ?? withPath(env.REDIS_URL, "/15");
 if (!TEST_DATABASE_URL || !TEST_REDIS_URL) {
   throw new Error("Tests need Postgres and Redis: run `npm run db:up` and create api/.env from api/.env.example.");
 }
-if (env.DATABASE_URL && new URL(TEST_DATABASE_URL).pathname === new URL(env.DATABASE_URL).pathname) {
+if (env.MIGRATION_DATABASE_URL && new URL(TEST_DATABASE_URL).pathname === new URL(env.MIGRATION_DATABASE_URL).pathname) {
   throw new Error("TEST_DATABASE_URL must point at a different database than DATABASE_URL.");
 }
+
+/**
+ * The app connects as its own login role, a member of payments_app, exactly like the
+ * real API: not a superuser, not the owner. So tests exercise the real privileges.
+ */
+const TEST_APP_URL = (() => {
+  const u = new URL(TEST_DATABASE_URL);
+  u.username = "payments_app_test";
+  u.password = "payments_app_test";
+  return u.toString();
+})();
+
+/** A key for webhook secrets, fresh per test process. */
+export const TEST_WEBHOOK_KEY = randomBytes(32);
+/** Tests talk to local servers, so private targets are allowed unless a test says otherwise. */
+export const TEST_WEBHOOK_POLICY = { requireHttps: false, allowPrivate: true };
 
 let testDbReady: Promise<void> | undefined;
 
@@ -71,6 +89,7 @@ function ensureTestDatabase(): Promise<void> {
     } finally {
       await admin.end();
     }
+    await ensureAppLogin(TEST_DATABASE_URL!, TEST_APP_URL);
   })();
   return testDbReady;
 }
@@ -89,17 +108,23 @@ function waitReady(client: Redis): Promise<void> {
   });
 }
 
-/** A fresh, migrated schema of its own in the test database. */
-export async function makeTestDb(): Promise<{ db: Db; schema: string }> {
+/**
+ * A fresh, migrated schema of its own in the test database. `db` is the app role (what
+ * the API uses); `owner` is the schema owner, for setup the app may not do.
+ */
+export async function makeTestDb(): Promise<{ db: Db; owner: Db; schema: string }> {
   await ensureTestDatabase();
   const schema = `test_${randomUUID().replaceAll("-", "")}`;
   await runMigrations({ databaseUrl: TEST_DATABASE_URL!, schema, lock: false });
-  const db = createDb(TEST_DATABASE_URL!, { schema, max: 3 });
+  const owner = createDb(TEST_DATABASE_URL!, { schema, max: 2 });
+  const db = createDb(TEST_APP_URL, { schema, max: 3 });
   cleanups.push(async () => {
-    await db.query(`DROP SCHEMA ${quoteIdent(schema)} CASCADE`);
     await db.end();
+    await owner.query(`DROP SCHEMA ${quoteIdent(schema)} CASCADE`);
+    await owner.end();
   });
-  return { db, schema };
+  await assertAppRole(db);
+  return { db, owner, schema };
 }
 
 /** Redis connections plus a key prefix nobody else uses. Keys are deleted afterwards. */
@@ -132,6 +157,8 @@ export function deadRedis() {
 type TestAppOptions = {
   /** Reuse another test app's database (two API instances sharing one Postgres). */
   db?: Db;
+  owner?: Db;
+  webhookPolicy?: { requireHttps: boolean; allowPrivate: boolean };
   /** Reuse a Redis prefix (two API instances sharing one Redis). */
   redisPrefix?: string;
   /** Use these Redis clients instead of real ones (e.g. deadRedis()). */
@@ -146,7 +173,9 @@ type TestAppOptions = {
  *   support@test (org_1 support), loner@test (no orgs).
  */
 export async function makeTestApp(clock = fakeClock(), opts: TestAppOptions = {}) {
-  const db = opts.db ?? (await seedFixtures((await makeTestDb()).db, clock));
+  const testDb = opts.db ? { db: opts.db, owner: opts.owner } : await makeTestDb();
+  if (!opts.db) await seedFixtures(testDb.db, clock);
+  const { db, owner } = testDb;
   const { redis, subscriber, prefix: redisPrefix } = opts.redisClients
     ? { ...opts.redisClients, prefix: opts.redisPrefix ?? `test:${randomUUID()}:` }
     : await makeTestRedis(opts.redisPrefix);
@@ -159,6 +188,8 @@ export async function makeTestApp(clock = fakeClock(), opts: TestAppOptions = {}
     redisPrefix,
     readiness: opts.readiness,
     logger: opts.logger,
+    webhookKey: TEST_WEBHOOK_KEY,
+    webhookPolicy: opts.webhookPolicy ?? TEST_WEBHOOK_POLICY,
   });
   cleanups.push(() => app.close());
 
@@ -175,7 +206,7 @@ export async function makeTestApp(clock = fakeClock(), opts: TestAppOptions = {}
   const get = (url: string, token?: string) =>
     app.inject({ method: "GET", url, headers: token ? { authorization: `Bearer ${token}` } : {} });
 
-  return { app, bus, db, redis, redisPrefix, clock, login, tokenFor, get };
+  return { app, bus, db, owner: owner!, redis, redisPrefix, clock, login, tokenFor, get };
 }
 
 async function seedFixtures(db: Db, clock: ReturnType<typeof fakeClock>): Promise<Db> {

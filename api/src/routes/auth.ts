@@ -1,6 +1,7 @@
 import { loginBodySchema as loginBody, registerBodySchema as registerBody, type Role } from "@mini-payments/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
+import { audit, requestContext } from "../audit.js";
 import { bearerToken, type AuthContext } from "../auth/context.js";
 import { hashPassword, verifyAgainstDummy, verifyPassword } from "../auth/password.js";
 import { RateLimiterUnavailableError } from "../auth/rateLimit.js";
@@ -67,9 +68,30 @@ export function authRoutes(app: FastifyInstance, auth: AuthContext) {
       const { email, password } = body.data;
 
       const ipKey = `ip:${req.ip}`;
+      const now = () => new Date(clock()).toISOString();
+      // A failed login changes nothing else, so its audit entry is a transaction of its own.
+      // The attempted email is recorded only when no account matches (it passed email
+      // validation, so it's an address, not a mistyped password).
+      const auditFailure = (reason: string, userId: string | null) =>
+        audit(
+          db,
+          requestContext(req, null),
+          {
+            orgId: null,
+            action: "auth.login.failed",
+            ...(userId ? { targetType: "user", targetId: userId } : {}),
+            metadata: userId ? { reason } : { reason, email },
+          },
+          now(),
+        );
+
       // Checked before the password, so a locked account can't be used as a guessing oracle.
       const wait = Math.max(await limiters.loginIp.retryAfterMs(ipKey), await limiters.loginEmail.retryAfterMs(email));
-      if (wait > 0) return tooMany(reply, wait);
+      if (wait > 0) {
+        const { rows: known } = await db.query<{ id: string }>("SELECT id FROM users WHERE email = $1", [email]);
+        await auditFailure("rate_limited", known[0]?.id ?? null);
+        return tooMany(reply, wait);
+      }
 
       const { rows } = await db.query<UserRow>("SELECT id, email, name, password_hash FROM users WHERE email = $1", [
         email,
@@ -79,17 +101,26 @@ export function authRoutes(app: FastifyInstance, auth: AuthContext) {
       if (!user || !ok) {
         await limiters.loginIp.hit(ipKey);
         await limiters.loginEmail.hit(email);
+        await auditFailure("invalid_credentials", user?.id ?? null);
         return reply.code(401).send({ error: "invalid_credentials" });
       }
 
       await limiters.loginEmail.reset(email);
-      const { token, expiresAt } = await sessions.create(user.id, req.headers["user-agent"] ?? null, bearerToken(req));
+      const { token, expiresAt } = await sessions.create(
+        user.id,
+        req.headers["user-agent"] ?? null,
+        bearerToken(req),
+        (tx, at) =>
+          audit(tx, requestContext(req, user.id), { orgId: null, action: "auth.login.succeeded", targetType: "user", targetId: user.id }, at),
+      );
       return { token, expiresAt, user: { id: user.id, email: user.email, name: user.name } };
     }),
   );
 
   app.post("/auth/logout", async (req, reply) => {
-    await sessions.destroy(bearerToken(req));
+    await sessions.destroy(bearerToken(req), (tx, userId, at) =>
+      audit(tx, requestContext(req, userId), { orgId: null, action: "auth.logout", targetType: "user", targetId: userId }, at),
+    );
     return reply.code(204).send();
   });
 
