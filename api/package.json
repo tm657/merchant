@@ -29,8 +29,8 @@
   },
   "dependencies": {
     "@mini-payments/shared": "0.1.0",
-    "argon2": "0.45.1",
-    "fastify": "5.12.7",
+    "argon2": "0.45.2",
+    "fastify": "5.12.8",
     "ioredis": "6.0.0",
     "node-pg-migrate": "9.0.0",
     "pg": "8.23.1",
